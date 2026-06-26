@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+backend/.venv/
+
+# Node
+node_modules/
+dist/
+frontend/dist/
+*.tsbuildinfo
+
+# Runtime state
+.run/
+frontend/.run/
+*.log
+*.pid
+
+# Local test scratch
+.tmp-e2e/
+
+# OS/editor
+.DS_Store
+.vscode/

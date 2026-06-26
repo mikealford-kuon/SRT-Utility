@@ -1,0 +1,349 @@
+{
+  "next_job_id": 61,
+  "jobs": [
+    {
+      "job_id": "job-placeholder-060",
+      "kind": "ingest",
+      "media_path": "/Users/kuon/.openclaw/workspace-nishino/projects/subtitle-workstation/backend/app/data/uploads/upload-060.mp4",
+      "media_metadata": {
+        "file_name": "upload-060.mp4",
+        "size_bytes": 152674305,
+        "duration_seconds": 173.525333,
+        "has_video": true,
+        "has_audio": true
+      },
+      "transcription_mode": "real-cli",
+      "transcription_source": "retimed-edits:vtt",
+      "timing_source": "real-cli:whisperx-aligned|retimed-edits:vtt",
+      "stage": "ready",
+      "progress_percent": 100,
+      "stage_label": "Ready",
+      "stage_description": "Processing complete. Review and export are ready.",
+      "artifact_count": 0,
+      "created_at": "2026-06-26T22:02:56.789123+00:00",
+      "updated_at": "2026-06-26T22:06:33.975107+00:00",
+      "transcript_segments": [
+        {
+          "segment_id": "job-placeholder-060-seg-001",
+          "start_seconds": 12.215,
+          "end_seconds": 13.415,
+          "text": "Hello, I'm Chris Humphreys.",
+          "speaker": null,
+          "retime_confidence": 0.0,
+          "retime_status": "corrected",
+          "retime_note": "New video material kept on current timing; learned corrections were auto-applied.",
+          "correction_suggestions": [
+            {
+              "wrong_text": "Humphries",
+              "corrected_text": "Humphreys",
+              "confidence": 0.801,
+              "kind": "phrase",
+              "status": "applied",
+              "source_segment_id": "job-placeholder-060-seg-002",
+              "note": "Auto-applied learned correction: Humphries -> Humphreys."
+            }
+          ]
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-002",
+          "start_seconds": 14.156,
+          "end_seconds": 18.937,
+          "text": "Hello, I'm Chris Humphreys, and I welcome you to the Humphreys and Associates simulation of the Control Account Manager discussion.",
+          "speaker": null,
+          "retime_confidence": 0.801,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-003",
+          "start_seconds": 20.218,
+          "end_seconds": 22.719,
+          "text": "As a Control Account Manager, or CAM,",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": "Previous edited VTT cue was split across current timing segments.",
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-004",
+          "start_seconds": 23.939,
+          "end_seconds": 26.548,
+          "text": "I know you will find it interesting and informative.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": "Previous edited VTT cue was split across current timing segments. End timing was extended from the uploaded VTT because the current alignment ended this matched cue early.",
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-005",
+          "start_seconds": 27.36,
+          "end_seconds": 32.535,
+          "text": "This video simulation is provided as a training aid for everyone involved in CAM discussions.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": "End timing was extended from the uploaded VTT because the current alignment ended this matched cue early.",
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-006",
+          "start_seconds": 33.582,
+          "end_seconds": 40.644,
+          "text": "These discussions should be viewed as an opportunity to build trust and an understanding of the program's earned value management system,",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-007",
+          "start_seconds": 41.364,
+          "end_seconds": 43.504,
+          "text": "it's data and processes.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-008",
+          "start_seconds": 45.825,
+          "end_seconds": 58.988,
+          "text": "The ultimate goal is for both sides to leave the discussion with an understanding of the customer's expectations for how the contractor plans to use the system and accomplish the contract work in a timely cost-effective manner.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-009",
+          "start_seconds": 60.295,
+          "end_seconds": 66.259,
+          "text": "The intent is to provide a sample discussion to help viewers better understand control account manager discussions.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-010",
+          "start_seconds": 67.58,
+          "end_seconds": 75.885,
+          "text": "The focus will be on the flow, the interchange, and most importantly, effective communication throughout the discussion.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-011",
+          "start_seconds": 77.146,
+          "end_seconds": 88.894,
+          "text": "Even though the discussion questions and answers are technically sound, this is only one example of a control account manager explaining the system processes using a CAM electronic notebook, e-notebook.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-012",
+          "start_seconds": 90.22,
+          "end_seconds": 92.88,
+          "text": "Each discussion is unique and will follow its own flow.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-013",
+          "start_seconds": 94.141,
+          "end_seconds": 102.822,
+          "text": "In this example, the customer's discussion representatives are Kate Smith, the discussion leader, and supporting her is Noah James.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-014",
+          "start_seconds": 104.122,
+          "end_seconds": 106.403,
+          "text": "The control account manager is Lucas Baker.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-015",
+          "start_seconds": 107.743,
+          "end_seconds": 111.184,
+          "text": "His program planning and control analyst is Amy Reed.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-016",
+          "start_seconds": 112.404,
+          "end_seconds": 118.585,
+          "text": "This video is broken into segments by topic, following the earned value management systems guidelines.",
+          "speaker": null,
+          "retime_confidence": 0.944,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-017",
+          "start_seconds": 119.931,
+          "end_seconds": 121.071,
+          "text": "There are 12 segments.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-018",
+          "start_seconds": 122.392,
+          "end_seconds": 128.053,
+          "text": "Each segment includes an introduction and a conclusion with comments to assist in understanding the process flow.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-019",
+          "start_seconds": 129.373,
+          "end_seconds": 135.755,
+          "text": "It is recommended that the segments be viewed in sequence, at least initially, as they follow a logical progression.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-020",
+          "start_seconds": 137.075,
+          "end_seconds": 142.917,
+          "text": "Once the entire discussion has been completed, you can go back and focus on specific topics of interest.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-021",
+          "start_seconds": 144.203,
+          "end_seconds": 164.891,
+          "text": "It should be noted that while new contracts have the integrated program management data and analysis report,\nIPMDAR, flowed down for reporting,\nthe samples in this video will use the legacy human readable, integrated program management report, IPMR, so participants can view the content of the reports more easily.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": "Multiple previous VTT cues were merged into this current timing segment.",
+          "correction_suggestions": []
+        },
+        {
+          "segment_id": "job-placeholder-060-seg-022",
+          "start_seconds": 166.111,
+          "end_seconds": 168.152,
+          "text": "We will start with the Organization Segment.",
+          "speaker": null,
+          "retime_confidence": 1.0,
+          "retime_status": "matched",
+          "retime_note": null,
+          "correction_suggestions": []
+        }
+      ],
+      "transcript_is_edited": true,
+      "subtitle_tracks": [
+        {
+          "track_id": "job-placeholder-060-track-001",
+          "source_kind": "edited-transcript",
+          "format_name": "srt",
+          "language": "eng",
+          "label": "English Subtitles",
+          "subtitle_path": null,
+          "is_default": true,
+          "is_active": true,
+          "origin_note": "Current edited transcript",
+          "created_at": "2026-06-26T22:03:16.305309+00:00",
+          "updated_at": "2026-06-26T22:03:16.305309+00:00"
+        },
+        {
+          "track_id": "job-placeholder-060-track-002",
+          "source_kind": "pre-retime-snapshot",
+          "format_name": "srt",
+          "language": "eng",
+          "label": "Before startup legacy apply 002",
+          "subtitle_path": "/Users/kuon/.openclaw/workspace-nishino/projects/subtitle-workstation/backend/app/data/tracks/job-placeholder-060-pre-retime-002.srt",
+          "is_default": false,
+          "is_active": true,
+          "origin_note": "Recoverable transcript snapshot before applying legacy subtitle text",
+          "created_at": "2026-06-26T22:03:16.382203+00:00",
+          "updated_at": "2026-06-26T22:03:16.382203+00:00"
+        },
+        {
+          "track_id": "job-placeholder-060-track-003",
+          "source_kind": "retimed-edits",
+          "format_name": "vtt",
+          "language": "eng",
+          "label": "m1",
+          "subtitle_path": "/Users/kuon/.openclaw/workspace-nishino/projects/subtitle-workstation/backend/app/data/tracks/upload-060-legacy.vtt",
+          "is_default": false,
+          "is_active": true,
+          "origin_note": "Legacy subtitle uploaded with source video and auto-applied after timing generation; average confidence=0.988",
+          "created_at": "2026-06-26T22:03:16.382222+00:00",
+          "updated_at": "2026-06-26T22:03:16.382222+00:00"
+        }
+      ],
+      "artifacts": [
+        {
+          "artifact_id": "job-placeholder-060-artifact-001",
+          "artifact_kind": "transcript-vtt",
+          "format_name": "vtt",
+          "file_name": "job-placeholder-060.vtt",
+          "artifact_path": "job-placeholder-060/20260626T220620224144Z-job-placeholder-060.vtt",
+          "download_url": "/jobs/job-placeholder-060/artifacts/job-placeholder-060-artifact-001/download",
+          "size_bytes": 2973,
+          "transcript_segment_count": 22,
+          "created_at": "2026-06-26T22:06:20.225280+00:00"
+        },
+        {
+          "artifact_id": "job-placeholder-060-artifact-002",
+          "artifact_kind": "video-mp4-softsub",
+          "format_name": "mp4-softsub",
+          "file_name": "job-placeholder-060.softsub.20260626T220633951060Z.mp4",
+          "artifact_path": "job-placeholder-060/job-placeholder-060.softsub.20260626T220633951060Z.mp4",
+          "download_url": "/jobs/job-placeholder-060/artifacts/job-placeholder-060-artifact-002/download",
+          "size_bytes": 152718195,
+          "transcript_segment_count": 22,
+          "created_at": "2026-06-26T22:06:33.975107+00:00"
+        }
+      ],
+      "pending_legacy_subtitle_path": null,
+      "pending_legacy_subtitle_name": null
+    }
+  ]
+}
