@@ -1,0 +1,361 @@
+WEBVTT
+
+00:00:06.507 --> 00:00:17.411
+In the Organization Segment, the discussion leaders are interested in work scope identification and how the control account manager, CAM, fits into the overall organization.
+
+00:00:18.672 --> 00:00:28.135
+Additionally, the discussion leader wants to understand how the control account manager plans and controls the work and what specific documents authorize that work.
+
+00:00:29.396 --> 00:00:35.338
+The objective is to establish that a firm organizational process is in place to properly manage the technical
+
+00:00:36.139 --> 00:00:39.001
+schedule and cost components of the work.
+
+00:00:41.262 --> 00:00:45.764
+Many of these documents were reviewed by the customer team prior to the onsite review.
+
+00:00:47.025 --> 00:00:54.329
+Therefore, some of the questions are asked to ensure that the manager is familiar with and uses the documentation to manage.
+
+00:00:55.590 --> 00:00:56.050
+Good morning.
+
+00:00:56.730 --> 00:00:57.011
+Kate.
+
+00:00:58.271 --> 00:00:58.611
+Noah.
+
+00:00:59.852 --> 00:01:02.113
+Good to see you both again after the briefing yesterday.
+
+00:01:02.133 --> 00:01:04.655
+I want to introduce you to Amy Reed.
+
+00:01:05.900 --> 00:01:08.761
+Kate, this is Amy, the program planning and controls analyst.
+
+00:01:10.061 --> 00:01:11.262
+Amy, this is Kate Smith.
+
+00:01:12.562 --> 00:01:18.244
+Kate's the EVMS focal point in the customer's program office. And this is Noah James.
+
+00:01:19.645 --> 00:01:23.286
+Noah will participate in the review and work with Kate and her team throughout the week.
+
+00:01:24.586 --> 00:01:27.207
+You might have met Noah previously on one of his surveillance visits.
+
+00:01:28.028 --> 00:01:28.908
+Please to meet you both.
+
+00:01:30.127 --> 00:01:33.209
+Please don't hesitate to call me during the review if I can be of any help.
+
+00:01:33.689 --> 00:01:35.990
+Amy was really helpful during my visit last month.
+
+00:01:36.050 --> 00:01:36.871
+Thanks again, Amy.
+
+00:01:38.051 --> 00:01:44.975
+Lucas, as I mentioned yesterday during the in-brief, Noah and I will be trading off as we talk with you this morning.
+
+00:01:46.176 --> 00:01:50.018
+We'd also welcome any help Amy can provide to keep things moving smoothly.
+
+00:01:50.798 --> 00:01:57.482
+Amy, we were impressed with how you and the program manager walked us through the EVMS storyboard during the in brief.
+
+00:01:58.733 --> 00:02:08.260
+We have a couple of questions about your company's EVM system that touch on the CAM support team, especially the areas where you play a key role in day-to-day operations.
+
+00:02:09.080 --> 00:02:16.266
+As Noah and I work through those topics this morning, we may ask for your help in clarifying roles and responsibilities.
+
+00:02:17.587 --> 00:02:22.510
+If you're able, we'd also appreciate you capturing any action items that come up.
+
+00:02:23.571 --> 00:02:25.832
+Absolutely, I'm happy to help in any way I can.
+
+00:02:27.011 --> 00:02:29.953
+No, let's go ahead and get started.
+
+00:02:30.734 --> 00:02:32.535
+We have a few more control account manager,
+
+00:02:33.516 --> 00:02:35.257
+CAM, discussions on the agenda today.
+
+00:02:36.779 --> 00:02:39.381
+Lucas, why don't we begin with you?
+
+00:02:40.842 --> 00:02:41.542
+Sounds good to me.
+
+00:02:42.723 --> 00:02:48.768
+I hope you both got a good idea yesterday of what we're doing here at production design services and more specifically with the EDIS program.
+
+00:02:49.629 --> 00:02:55.053
+Yes, we did get a good overall picture, and I know that you play a key role on the program.
+
+00:02:55.827 --> 00:03:00.909
+So I'm looking forward to spending some time with you and understanding how you're managing all of your control accounts.
+
+00:03:02.149 --> 00:03:04.310
+Can we start with you explaining what your job is?
+
+00:03:05.851 --> 00:03:06.431
+Absolutely.
+
+00:03:07.692 --> 00:03:17.575
+I am a manager of software development for production design services and my primary responsibility is to design the workflow document system software for the EDIS program.
+
+00:03:18.936 --> 00:03:21.937
+As you know, I looked at the contract statement of work
+
+00:03:22.399 --> 00:03:28.805
+and compared it to the work breakdown structure, WBS dictionary, before we arrived for the onsite review.
+
+00:03:30.026 --> 00:03:35.871
+I emailed you a couple of questions regarding the exact content of the WBS elements that you're working on.
+
+00:03:37.092 --> 00:03:42.377
+This morning, we'd like to hear you explain your areas of the WBS in more detail.
+
+00:03:43.618 --> 00:03:48.382
+What are the overall program objectives and what part of those are you responsible for?
+
+00:03:50.496 --> 00:04:01.881
+Well, as David Westfields our program manager mentioned yesterday, the overall objective is to design, develop, fabricate, and test an application server, and its related components, all in accordance with detailed specifications.
+
+00:04:03.142 --> 00:04:10.726
+Our scope includes all server and associated network components, as well as the operating system software, the tech manuals, and other documentation.
+
+00:04:11.926 --> 00:04:15.428
+I'm responsible for the design and development of the software for the program.
+
+00:04:16.609 --> 00:04:19.610
+Would you like a copy of our updated contract statement of work?
+
+00:04:21.268 --> 00:04:21.848
+Oh, no, thanks.
+
+00:04:23.089 --> 00:04:29.151
+Among the updated documents we received here on site yesterday was the recently updated contract statement of work.
+
+00:04:30.371 --> 00:04:33.252
+I've already skimmed it and will read it in more detail this evening.
+
+00:04:34.472 --> 00:04:42.415
+If I'm concerned about any portion of the statement of work left out or not covered as a result of our discussion, I'll circle back tomorrow.
+
+00:04:44.216 --> 00:04:44.876
+That would be fine.
+
+00:04:46.416 --> 00:04:48.237
+What is your position in the organization?
+
+00:04:49.505 --> 00:04:51.426
+Do you appear on the organization chart?
+
+00:04:52.987 --> 00:04:53.287
+I do.
+
+00:04:54.528 --> 00:04:57.669
+Let me show you the organizational charts in my CAM e-Notebook.
+
+00:05:03.813 --> 00:05:08.415
+This is the organization chart for the company, which is headed by our president, Larry Parrot.
+
+00:05:09.596 --> 00:05:17.340
+My reporting structure comes down through the engineering manager, to the software engineering manager, to me right here in software development.
+
+00:05:18.519 --> 00:05:21.361
+This is where my group integrates into the EDIS program.
+
+00:05:22.562 --> 00:05:27.766
+David Westfields is the program manager, and Jade Williams is the software development manager.
+
+00:05:28.947 --> 00:05:30.688
+They both made presentations yesterday.
+
+00:05:31.909 --> 00:05:34.391
+I report to Jade, as you can see here.
+
+00:05:40.096 --> 00:05:41.136
+How long have you been a CAM?
+
+00:05:42.297 --> 00:05:43.959
+I've been a CAM for almost five years.
+
+00:05:45.220 --> 00:05:48.222
+Three of which were on another software development program for the company.
+
+00:05:49.887 --> 00:05:52.148
+Have you received any formal EVM training?
+
+00:05:53.569 --> 00:06:00.052
+Yes, I've gone through the 24-hour basic EVMS workshop and then the one-day EDIS program specific class which was very helpful.
+
+00:06:01.293 --> 00:06:07.116
+And last month, all CAMs attended another one-day special review preparation seminar and workshop.
+
+00:06:08.016 --> 00:06:08.457
+Very good.
+
+00:06:09.637 --> 00:06:19.142
+In addition to the overall EVM system description document, are there any other sets of procedures or instructions that clearly describe your role in responsibilities as a CAM?
+
+00:06:20.383 --> 00:06:20.623
+Yes.
+
+00:06:21.384 --> 00:06:26.308
+We have a full set of operating procedures that detail the requirements defined in the system description.
+
+00:06:27.549 --> 00:06:35.216
+Then there are specific program directives or PDs that as the name implies are unique to each program, which the program manager, David Westfields issues.
+
+00:06:35.957 --> 00:06:38.179
+Do you have some examples of program directives?
+
+00:06:40.461 --> 00:06:40.781
+I do.
+
+00:06:42.042 --> 00:06:44.785
+Let me show you when I keep handy here in my CAM e-Notebook.
+
+00:06:45.979 --> 00:06:52.062
+The most recent PD provides specific directions on how we're going to conduct a bottom-up estimate at complete, EAC.
+
+00:06:53.262 --> 00:06:57.984
+It includes the planning assumptions, the timeframes, and the program teams' roles and responsibilities.
+
+00:06:59.245 --> 00:07:06.147
+Program directives are also used to promulgate control documents, such as the WBS and the WBS dictionary.
+
+00:07:07.388 --> 00:07:09.589
+And here is our WBS for the EDIS program.
+
+00:07:10.947 --> 00:07:16.591
+At the WBS level one is the entire program which is then broken down into eight level two elements.
+
+00:07:17.932 --> 00:07:29.860
+The engineering data integration system element 1010000 is then broken down into three level three elements, which are then further broken down into element 1010201.
+
+00:07:31.081 --> 00:07:33.602
+Workflow document system development at level four.
+
+00:07:35.083 --> 00:07:37.565
+Which control accounts are you responsible for managing?
+
+00:07:39.057 --> 00:07:40.999
+I'm responsible for several control accounts.
+
+00:07:42.239 --> 00:07:50.546
+Here on the responsibility assignment matrix or RAM, you can see where the software development organization intersects with the level four WBS elements.
+
+00:07:51.847 --> 00:07:55.590
+This row of X's shows the efforts related to the workflow document system.
+
+00:07:57.331 --> 00:08:02.715
+This X here is where I actually have three control accounts to manage the workflow document system tasks.
+
+00:08:05.718 --> 00:08:08.580
+The effort has been broken into three control accounts.
+
+00:08:10.089 --> 00:08:24.921
+One for labor, 1040ADC, one for materials, 2410ADC, and another for a subcontract, 3040ADC, which I am managing for a portion of the work.
+
+00:08:26.182 --> 00:08:30.105
+There's a WBS dictionary entry that further defines each element.
+
+00:08:31.966 --> 00:08:36.610
+We will discuss the material control account and the subcontract effort in more detail later.
+
+00:08:37.877 --> 00:08:43.940
+The PM for this program has adopted a multiple control accounts approach at a single intersection on the RAM.
+
+00:08:44.440 --> 00:08:49.902
+I have worked on other programs where the PMs have only had one control account at each intersection on the RAM.
+
+00:08:51.163 --> 00:08:56.105
+Here is the level four WBS dictionary for the workflow and document system task.
+
+00:08:57.345 --> 00:09:04.028
+Notice there is descriptive information on the top half of the form and a detailed description in the main body.
+
+00:09:05.812 --> 00:09:12.017
+Also, if you look here in the upper part, there is a reference to the contract statement of work.
+
+00:09:13.779 --> 00:09:20.744
+This helps us ensure that all effort is within the contract scope and that all contract scope is captured within the WBS dictionary.
+
+00:09:21.705 --> 00:09:27.870
+Is there any documentation that brings your responsibilities down further from the WBS dictionary to the control account level?
+
+00:09:28.771 --> 00:09:28.971
+Yes.
+
+00:09:30.165 --> 00:09:39.509
+Each WBS element and WBS dictionary description at the control account level has a control account work authorization or CAWA associated with it for approval and implementation.
+
+00:09:40.710 --> 00:09:42.031
+Here I can show you one of mine.
+
+00:09:43.231 --> 00:09:51.635
+The CAWA is the internal control document that authorizes me as the CAM to plan, execute, and manage the resources to accomplish my work.
+
+00:09:52.876 --> 00:09:57.838
+The CAWA document includes my statement of work, schedule, constraints, and budget.
+
+00:09:59.015 --> 00:10:14.304
+In this case, the authorized labor and non-labor resources with the approved CAWA, I then subdivide and organize the work in the control account plan, detail the plan for the execution of the work, assign resources, and develop measures of performance known as earned value techniques.
+
+00:10:15.805 --> 00:10:20.148
+How are you involved in creating the workscope schedule and budget for these control accounts?
+
+00:10:21.547 --> 00:10:28.090
+I had a lot of input into the work scope specifically into defining the scope, breaking it into lower levels and working with the scheduling team.
+
+00:10:28.731 --> 00:10:32.312
+Laying out the detailed schedule to support that work.
+
+00:10:32.332 --> 00:10:41.577
+I also had to ensure that the work content fully supported the WBS that I was assigned and was articulated in the applicable portions of the WBS dictionary.
+
+00:10:42.806 --> 00:10:53.254
+Then I worked with the scheduling team to develop a specific schedule for that scope of work and ensure that it was achievable within the authorized budget so that it would support all of the program objectives.
+
+00:10:54.515 --> 00:10:57.998
+The schedule traceability had to be achieved both horizontally and vertically.
+
+00:10:59.939 --> 00:11:05.283
+The control account manager should address technical, schedule, and cost independently.
+
+00:11:06.484 --> 00:11:07.345
+Regarding technical,
+
+00:11:08.048 --> 00:11:13.392
+regarding technical, the work breakdown structure dictionary content should be well-defined to ensure that all work is covered,
+
+00:11:14.112 --> 00:11:15.573
+nothing more and nothing less.
+
+00:11:16.894 --> 00:11:28.922
+With respect to the schedule, there should be a discussion of the integrated master schedule and how the control account manager's schedule integrates with, and is consistent with the integrated master schedule.
+
+00:11:29.122 --> 00:11:36.767
+With respect to cost, there should be a discussion of the cost estimating process used during the proposal phase.
+
+00:11:38.055 --> 00:11:49.565
+Remember, the objective is not only to prove that a sound organizational process exists, but also to verify that the work scope requirements are achievable within the constraints of the contract.
+
+00:11:50.826 --> 00:12:00.454
+If the work scope is not properly identified, and an effective organization is not in place to manage the program, then it becomes very difficult to achieve the goals.
+
+00:12:01.775 --> 00:12:05.218
+These points are especially important when conducting a system review.
