@@ -2218,6 +2218,34 @@ def find_token_subsequence(
     return None
 
 
+def subtitle_match_tokens(value: str) -> list[str]:
+    return normalize_subtitle_match_text(value).split()
+
+
+def is_prefix_clipped_match(old_text: str, new_text: str) -> bool:
+    """Detect current timing text that only captured the start of an old cue."""
+    old_tokens = subtitle_match_tokens(old_text)
+    new_tokens = subtitle_match_tokens(new_text)
+    if not old_tokens or not new_tokens:
+        return False
+    if len(old_tokens) <= len(new_tokens):
+        return False
+    if old_tokens[: len(new_tokens)] != new_tokens:
+        return False
+
+    missing_token_count = len(old_tokens) - len(new_tokens)
+    if missing_token_count < 2:
+        return False
+
+    # One-word starts like "Yes." are common CC cues, but also ambiguous.
+    # Only trust them when the old cue is short enough that this is clearly a
+    # clipped utterance rather than a broad accidental match.
+    if len(new_tokens) == 1:
+        return len(old_tokens) <= 8
+
+    return True
+
+
 def split_corrected_text_across_timing_segments(
     *,
     corrected_text: str,
@@ -2736,16 +2764,18 @@ def extend_segment_end_from_compatible_legacy_timing(
     group_start_seconds: float,
     threshold: float,
     confidence: float,
+    allow_prefix_clip_extension: bool = False,
 ) -> tuple[TranscriptSegment, str | None]:
     """Keep trusted legacy cue endings when WhisperX ends a matched cue too early."""
-    if confidence < max(threshold, 0.9):
+    if confidence < max(threshold, 0.9) and not allow_prefix_clip_extension:
         return segment, None
 
     legacy_end = old_segment.end_seconds
     if legacy_end <= segment.end_seconds + 0.25:
         return segment, None
 
-    if abs(old_segment.start_seconds - group_start_seconds) > 1.75:
+    start_tolerance = 4.0 if allow_prefix_clip_extension else 1.75
+    if abs(old_segment.start_seconds - group_start_seconds) > start_tolerance:
         return segment, None
 
     max_allowed_end = legacy_end
@@ -3109,6 +3139,33 @@ def retime_edited_subtitle_segments(
                 }
             )
             confidence_values.append(confidence)
+        elif is_prefix_clipped_match(old_segment.text, new_segment.text):
+            matched_old_indexes.add(old_index)
+            status = "matched"
+            prefix_confidence = max(confidence, threshold)
+            timed_segment, timing_note = extend_segment_end_from_compatible_legacy_timing(
+                segment=new_segment,
+                old_segment=old_segment,
+                next_timing_segment=next_timing_segment,
+                group_start_seconds=new_segment.start_seconds,
+                threshold=threshold,
+                confidence=prefix_confidence,
+                allow_prefix_clip_extension=True,
+            )
+            note = "Current timing text only contained the start of the uploaded VTT cue; preserved the VTT tail."
+            if timing_note:
+                note = f"{note} {timing_note}"
+            next_segment = timed_segment.model_copy(
+                update={
+                    "text": old_segment.text,
+                    "speaker": old_segment.speaker,
+                    "retime_confidence": round(prefix_confidence, 3),
+                    "retime_status": status,
+                    "retime_note": note,
+                    "correction_suggestions": [],
+                }
+            )
+            confidence_values.append(prefix_confidence)
         else:
             corrected_text, applied, suggested = apply_correction_suggestions_to_text(
                 new_segment.text,

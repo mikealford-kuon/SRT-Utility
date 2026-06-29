@@ -230,6 +230,62 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         self.assertEqual(retimed[2].retime_status, "new-only")
         self.assertEqual(report.matched_segments, 2)
 
+    def test_prefix_only_current_text_preserves_uploaded_vtt_tail(self) -> None:
+        old_segments = [
+            segment("old-1", 25.4, 26.4, "Yes. That's right, Noah."),
+            segment("old-2", 27.0, 30.0, "The next complete caption is unchanged."),
+        ]
+        new_segments = [
+            segment("new-1", 25.45, 25.75, "Yes."),
+            segment("new-2", 27.1, 29.8, "The next complete caption is unchanged."),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(retimed[0].text, "Yes. That's right, Noah.")
+        self.assertEqual(retimed[0].retime_status, "matched")
+        self.assertIn("preserved the VTT tail", retimed[0].retime_note or "")
+        self.assertGreaterEqual(retimed[0].end_seconds, 26.4)
+        self.assertEqual(report.matched_segments, 2)
+        self.assertEqual(report.low_confidence_segments, 0)
+        self.assertEqual(report.unmatched_old_segments, 0)
+
+    def test_prefix_only_current_text_preserves_longer_uploaded_vtt_tail(self) -> None:
+        old_segments = [
+            segment(
+                "old-1",
+                40.0,
+                47.0,
+                "Kate, are you okay or should we do the remaining five work packages?",
+            ),
+        ]
+        new_segments = [
+            segment("new-1", 40.2, 42.0, "Kate, are you okay"),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(
+            retimed[0].text,
+            "Kate, are you okay or should we do the remaining five work packages?",
+        )
+        self.assertEqual(retimed[0].retime_status, "matched")
+        self.assertIn("preserved the VTT tail", retimed[0].retime_note or "")
+        self.assertEqual(report.matched_segments, 1)
+        self.assertEqual(report.low_confidence_segments, 0)
+
     def test_multiple_old_vtt_cues_merge_into_one_current_timing_segment(self) -> None:
         old_segments = [
             segment("old-1", 10.0, 12.0, "First corrected sentence."),
@@ -641,6 +697,41 @@ class RetimeEditedSubtitleEndpointTests(unittest.TestCase):
         self.assertEqual(retimed_text.count("process is in place"), 1)
         self.assertEqual(payload["retime_report"]["matched_segments"], 2)
         self.assertEqual(payload["retime_report"]["unmatched_new_segments"], 0)
+
+    def test_endpoint_preserves_uploaded_vtt_tail_when_current_text_is_prefix_only(self) -> None:
+        app_main.jobs[0] = app_main.jobs[0].model_copy(
+            update={
+                "transcript_segments": [
+                    segment("new-1", 25.45, 25.75, "Yes."),
+                    segment("new-2", 27.1, 29.8, "The next complete caption is unchanged."),
+                ],
+            }
+        )
+        previous_vtt = (
+            "WEBVTT\n\n"
+            "00:00:25.400 --> 00:00:26.400\n"
+            "Yes. That's right, Noah.\n\n"
+            "00:00:27.000 --> 00:00:30.000\n"
+            "The next complete caption is unchanged.\n"
+        )
+
+        upload = UploadFile(
+            file=io.BytesIO(previous_vtt.encode("utf-8")),
+            filename="previous.vtt",
+        )
+        response = asyncio.run(
+            app_main.retime_job_edited_subtitles(
+                "job-retime-test",
+                file=upload,
+                confidence_threshold=0.58,
+            )
+        )
+
+        payload = response.model_dump()
+        self.assertEqual(payload["transcript_segments"][0]["text"], "Yes. That's right, Noah.")
+        self.assertIn("preserved the VTT tail", payload["transcript_segments"][0]["retime_note"])
+        self.assertEqual(payload["retime_report"]["matched_segments"], 2)
+        self.assertEqual(payload["retime_report"]["low_confidence_segments"], 0)
 
     def test_sidecar_import_applies_text_to_existing_timing(self) -> None:
         media_path = Path(self.temp_dir.name) / "changed-video.mp4"
