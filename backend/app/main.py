@@ -2246,6 +2246,74 @@ def is_prefix_clipped_match(old_text: str, new_text: str) -> bool:
     return True
 
 
+def token_jaccard(left_text: str, right_text: str) -> float:
+    """Token-set Jaccard similarity in [0, 1] between two subtitle strings."""
+    left_tokens = set(subtitle_match_tokens(left_text))
+    right_tokens = set(subtitle_match_tokens(right_text))
+    if not left_tokens or not right_tokens:
+        return 0.0
+    union = left_tokens | right_tokens
+    if not union:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(union)
+
+
+def is_low_confidence_clip_preservable(
+    *,
+    old_segment: TranscriptSegment,
+    new_segment: TranscriptSegment,
+    confidence: float,
+    threshold: float,
+) -> tuple[bool, str | None]:
+    """When the alignment engine reports low confidence, decide whether the
+    previously edited VTT text is still safe to keep.
+
+    The current-timing text can drop, reorder, or partially truncate words
+    without the alignment score catching it. Falling back to the new (often
+    lower-quality) text in those cases silently discards the user's prior
+    edits, which is what the recurring "tail-clipped comment" bug has been.
+    Preserving the old text is appropriate when the new text is a subsequence
+    of the old one and the timing overlaps meaningfully.
+    """
+    old_text = old_segment.text or ""
+    new_text = new_segment.text or ""
+    if not old_text or not new_text:
+        return False, None
+
+    old_tokens = subtitle_match_tokens(old_text)
+    new_tokens = subtitle_match_tokens(new_text)
+    if not old_tokens or not new_tokens:
+        return False, None
+
+    overlap = token_jaccard(old_text, new_text)
+    if overlap < 0.55:
+        return False, None
+
+    start_overlap = abs(old_segment.start_seconds - new_segment.start_seconds) <= 6.0
+    end_truncates_old = (old_segment.end_seconds - new_segment.end_seconds) > 0.75
+    new_is_subsequence_of_old = (
+        find_token_subsequence(old_tokens, new_tokens, start_at=0) is not None
+    )
+    old_is_subsequence_of_new = (
+        find_token_subsequence(new_tokens, old_tokens, start_at=0) is not None
+        and len(old_tokens) >= max(4, int(len(new_tokens) * 0.6))
+    )
+
+    if start_overlap and end_truncates_old and new_is_subsequence_of_old:
+        return (
+            True,
+            "New timing text was a prefix of the uploaded VTT cue and ended earlier; "
+            "the previously edited VTT text was preserved to avoid clipping the tail.",
+        )
+    if start_overlap and old_is_subsequence_of_new and overlap >= 0.78 and confidence >= max(0.45, threshold - 0.15):
+        return (
+            True,
+            "Upload timing was very close to the previously edited VTT cue; "
+            "the uploaded VTT text was preserved verbatim.",
+        )
+    return False, None
+
+
 def split_corrected_text_across_timing_segments(
     *,
     corrected_text: str,
@@ -2368,6 +2436,47 @@ def split_corrected_text_across_timing_segments(
         return None
 
     return chunks_from_matches([(0, first_chunk_end_token), *trailing_matches])
+
+
+def collapse_short_trailing_split_chunks(
+    *,
+    corrected_text: str,
+    chunks: list[str],
+    timing_segments: list[TranscriptSegment],
+) -> tuple[list[str], list[int]]:
+    """Keep tiny tail fragments attached to the cue they complete.
+
+    WhisperX sometimes emits the final word or acronym of a sentence as its
+    own very short timing segment. If we preserve that split, playback looks
+    like the previous caption was clipped even though the tail technically
+    exists in the next cue.
+    """
+    if len(chunks) < 2 or len(chunks) != len(timing_segments):
+        return chunks, []
+
+    collapsed_chunks = list(chunks)
+    skipped_indexes: list[int] = []
+
+    while len(collapsed_chunks) - len(skipped_indexes) >= 2:
+        tail_index = len(collapsed_chunks) - 1 - len(skipped_indexes)
+        tail_text = collapsed_chunks[tail_index]
+        tail_tokens = subtitle_match_tokens(tail_text)
+        tail_duration = (
+            timing_segments[tail_index].end_seconds
+            - timing_segments[tail_index].start_seconds
+        )
+        if len(tail_tokens) > 2:
+            break
+        if len(tail_text.strip()) > 14:
+            break
+        if tail_duration > 1.35:
+            break
+
+        previous_index = tail_index - 1
+        collapsed_chunks[previous_index] = corrected_text
+        skipped_indexes.append(tail_index)
+
+    return collapsed_chunks, skipped_indexes
 
 
 def correction_key(value: str) -> str:
@@ -2888,6 +2997,7 @@ def retime_edited_subtitle_segments(
     split_text_by_new_index: dict[int, tuple[int, str, float]] = {}
     split_group_start_by_new_index: dict[int, float] = {}
     split_group_last_new_indexes: set[int] = set()
+    skipped_split_new_indexes: set[int] = set()
     for alignment_index, (old_index, new_index, confidence) in enumerate(alignments):
         if old_index is None or new_index is None or confidence < threshold:
             continue
@@ -2949,9 +3059,32 @@ def retime_edited_subtitle_segments(
                     best_split_confidence = split_confidence
 
         if best_split and len(best_split) == len(best_new_indexes):
+            best_split, skipped_indexes = collapse_short_trailing_split_chunks(
+                corrected_text=old_segments[old_index].text,
+                chunks=best_split,
+                timing_segments=[
+                    new_timing_segments[best_new_index]
+                    for best_new_index in best_new_indexes
+                ],
+            )
+            best_skipped_new_indexes = {
+                best_new_indexes[skipped_index]
+                for skipped_index in skipped_indexes
+            }
+            effective_new_indexes = [
+                best_new_index
+                for index, best_new_index in enumerate(best_new_indexes)
+                if index not in set(skipped_indexes)
+            ]
+            if not effective_new_indexes:
+                continue
+
             split_group_start = new_timing_segments[best_new_indexes[0]].start_seconds
-            split_group_last_new_indexes.add(best_new_indexes[-1])
+            split_group_last_new_indexes.add(effective_new_indexes[-1])
+            skipped_split_new_indexes.update(best_skipped_new_indexes)
             for covered_new_index, chunk_text in zip(best_new_indexes, best_split):
+                if covered_new_index in best_skipped_new_indexes:
+                    continue
                 existing_split = split_text_by_new_index.get(covered_new_index)
                 if existing_split is not None and existing_split[2] > best_split_confidence:
                     continue
@@ -2997,11 +3130,16 @@ def retime_edited_subtitle_segments(
     for old_index, new_index, confidence in alignments:
         if new_index is None:
             continue
+        if new_index in skipped_split_new_indexes:
+            continue
 
         new_segment = new_timing_segments[new_index]
+        next_timing_index = new_index + 1
+        while next_timing_index in skipped_split_new_indexes:
+            next_timing_index += 1
         next_timing_segment = (
-            new_timing_segments[new_index + 1]
-            if new_index + 1 < len(new_timing_segments)
+            new_timing_segments[next_timing_index]
+            if next_timing_index < len(new_timing_segments)
             else None
         )
         split_override = split_text_by_new_index.get(new_index)
@@ -3139,6 +3277,39 @@ def retime_edited_subtitle_segments(
                 }
             )
             confidence_values.append(confidence)
+        elif (preserve_note := is_low_confidence_clip_preservable(
+            old_segment=old_segment,
+            new_segment=new_segment,
+            confidence=confidence,
+            threshold=threshold,
+        ))[0]:
+            preserve_explanation = preserve_note[1] or "Preserved the previously edited VTT text on a low-confidence match."
+            matched_old_indexes.add(old_index)
+            status = "matched"
+            prefix_confidence = max(confidence, threshold)
+            timed_segment, timing_note = extend_segment_end_from_compatible_legacy_timing(
+                segment=new_segment,
+                old_segment=old_segment,
+                next_timing_segment=next_timing_segment,
+                group_start_seconds=new_segment.start_seconds,
+                threshold=threshold,
+                confidence=prefix_confidence,
+                allow_prefix_clip_extension=True,
+            )
+            note = preserve_explanation
+            if timing_note:
+                note = f"{note} {timing_note}"
+            next_segment = timed_segment.model_copy(
+                update={
+                    "text": old_segment.text,
+                    "speaker": old_segment.speaker,
+                    "retime_confidence": round(prefix_confidence, 3),
+                    "retime_status": status,
+                    "retime_note": note,
+                    "correction_suggestions": [],
+                }
+            )
+            confidence_values.append(prefix_confidence)
         elif is_prefix_clipped_match(old_segment.text, new_segment.text):
             matched_old_indexes.add(old_index)
             status = "matched"

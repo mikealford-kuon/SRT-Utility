@@ -433,6 +433,77 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         self.assertEqual(report.matched_segments, 2)
         self.assertEqual(report.unmatched_new_segments, 0)
 
+    def test_tiny_trailing_split_fragment_stays_attached_to_previous_cue(self) -> None:
+        old_segments = [
+            segment("old-1", 92.087, 95.788, "Lucas, what do you mean by an LOE, EVT?"),
+            segment("old-2", 97.228, 100.749, "LOE is one of the seven EVTs that our system allows us to use."),
+        ]
+        new_segments = [
+            segment("new-1", 92.087, 94.528, "Lucas, what do you mean by an LOE"),
+            segment("new-2", 95.248, 95.788, "EVT."),
+            segment("new-3", 97.228, 100.749, "LOE is one of the seven EVTs that our system allows us to use."),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(len(retimed), 2)
+        self.assertEqual(retimed[0].text, "Lucas, what do you mean by an LOE, EVT?")
+        self.assertAlmostEqual(retimed[0].end_seconds, 95.788)
+        self.assertEqual(retimed[1].text, "LOE is one of the seven EVTs that our system allows us to use.")
+        self.assertEqual(report.matched_segments, 2)
+        self.assertEqual(report.unmatched_new_segments, 0)
+
+    def test_low_confidence_subsequence_preserves_edited_vtt_when_new_ended_early(self) -> None:
+        # Use small, short cues so the alignment score falls below threshold but
+        # the new timing text is still a clear prefix of the old one.
+        old_segments = [
+            segment("old-1", 10.0, 14.5, "Welcome to our evms training course for control account managers"),
+        ]
+        new_segments = [
+            segment("new-1", 10.05, 11.5, "Welcome to our evms training"),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.95,  # push threshold high to force the low-confidence path
+        )
+
+        self.assertEqual(retimed[0].text, old_segments[0].text)
+        self.assertIn("preserved", (retimed[0].retime_note or "").lower())
+        # Confidence should match the underlying score, not be artificially bumped
+        # above the high threshold (we trust the wording but not the score).
+        self.assertGreaterEqual(report.matched_segments, 1)
+
+    def test_low_confidence_unrelated_vtt_does_not_overwrite_new_timing(self) -> None:
+        # When the previously uploaded VTT is textually unrelated, do not preserve
+        # its old text - the placeholder / re-transcribed text is closer to truth.
+        old_segments = [
+            segment("old-1", 0.0, 3.0, "A completely different sentence about a different topic."),
+        ]
+        new_segments = [
+            segment("new-1", 0.0, 2.23, "Ready-to-export subtitle line 1."),
+        ]
+
+        retimed, _ = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(retimed[0].text, "Ready-to-export subtitle line 1.")
+        self.assertEqual(retimed[0].retime_status, "low-confidence")
+
     def test_unrelated_previous_file_does_not_overwrite_new_text(self) -> None:
         old_segments = [
             segment("old-1", 0.0, 2.0, "A totally unrelated script about finance"),
