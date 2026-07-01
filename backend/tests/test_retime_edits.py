@@ -85,6 +85,41 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         self.assertEqual(report.matched_segments, 2)
         self.assertEqual(report.unmatched_new_segments, 1)
 
+    def test_changed_mp4_insert_delete_shape_wins_inside_matched_segment(self) -> None:
+        old_segments = [
+            segment(
+                "old-1",
+                0.0,
+                8.0,
+                "Welcome to the EVMS course. This removed sentence should not return.",
+            ),
+        ]
+        new_segments = [
+            segment(
+                "new-1",
+                20.0,
+                23.5,
+                "welcome to the evms course this new MP4 sentence was inserted",
+            ),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(
+            retimed[0].text,
+            "Welcome to the EVMS course. This new MP4 sentence was inserted",
+        )
+        self.assertEqual(retimed[0].start_seconds, 20.0)
+        self.assertEqual(retimed[0].end_seconds, 23.5)
+        self.assertNotIn("removed sentence", retimed[0].text)
+        self.assertEqual(report.matched_segments, 1)
+
     def test_single_old_vtt_cue_splits_across_current_timing_segments(self) -> None:
         old_segments = [
             segment(
@@ -131,11 +166,11 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         self.assertEqual(report.unmatched_old_segments, 0)
         self.assertEqual(report.unmatched_new_segments, 0)
 
-    def test_matched_long_legacy_cue_can_extend_early_current_end(self) -> None:
+    def test_stale_legacy_end_does_not_override_current_mp4_end(self) -> None:
         old_segments = [
             segment(
                 "old-1",
-                10.0,
+                8.0,
                 20.0,
                 "This long cue should remain visible until the spoken audio has actually finished.",
             ),
@@ -161,13 +196,101 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
 
         self.assertEqual(retimed[0].text, old_segments[0].text)
         self.assertEqual(retimed[0].start_seconds, 10.15)
-        self.assertEqual(retimed[0].end_seconds, 20.0)
-        self.assertIn("extended", retimed[0].retime_note or "")
+        self.assertEqual(retimed[0].end_seconds, 15.0)
+        self.assertNotIn("extended", retimed[0].retime_note or "")
         self.assertEqual(report.matched_segments, 2)
 
-    def test_legacy_end_extension_is_capped_before_next_current_segment(self) -> None:
+    def test_dense_current_mp4_caption_gap_beats_stale_or_long_vtt_end(self) -> None:
         old_segments = [
-            segment("old-1", 10.0, 20.0, "This cue should not overlap the next one."),
+            segment(
+                "old-1",
+                52.452,
+                67.474,
+                "of $1,621,825, against my BAC of $1,66750, That's slightly less than a 1% variance at completion.",
+            ),
+            segment(
+                "old-2",
+                69.228,
+                76.454,
+                "As I recall, when you showed me your updated control account plan, you were only about 13% complete.",
+            ),
+        ]
+        new_segments = [
+            segment(
+                "new-1",
+                52.452,
+                55.474,
+                "Of $1,621,825, against my BAC of $1,66750, that's slightly less than a 1% variance at completion.",
+            ),
+            segment(
+                "new-2",
+                69.228,
+                76.454,
+                "As I recall, when you showed me your updated control account plan, you were only about 13% complete.",
+            ),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(retimed[0].start_seconds, 52.452)
+        self.assertAlmostEqual(retimed[0].end_seconds, 67.728)
+        self.assertIn("Dense caption timing was extended", retimed[0].retime_note or "")
+        self.assertLess(retimed[0].end_seconds, retimed[1].start_seconds)
+        self.assertEqual(report.matched_segments, 2)
+
+    def test_dense_current_mp4_caption_gap_repairs_stale_short_vtt_end(self) -> None:
+        old_segments = [
+            segment(
+                "old-1",
+                52.452,
+                55.474,
+                "That's slightly less than a 1% variance at completion.",
+            ),
+            segment(
+                "old-2",
+                69.228,
+                77.123,
+                "As I recall, when you showed me your updated control account plan, you were only about 13% complete.",
+            ),
+        ]
+        new_segments = [
+            segment(
+                "new-1",
+                52.452,
+                55.474,
+                "Of $1,621,825, against my BAC of $1,66750, that's slightly less than a 1% variance at completion.",
+            ),
+            segment(
+                "new-2",
+                69.228,
+                77.123,
+                "As I recall, when you showed me your updated control account plan, you were only about 13% complete.",
+            ),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(retimed[0].start_seconds, 52.452)
+        self.assertAlmostEqual(retimed[0].end_seconds, 67.728)
+        self.assertIn("Dense caption timing was extended", retimed[0].retime_note or "")
+        self.assertLess(retimed[0].end_seconds, retimed[1].start_seconds)
+        self.assertGreaterEqual(report.matched_segments, 1)
+
+    def test_legacy_end_timing_does_not_override_current_mp4_segment(self) -> None:
+        old_segments = [
+            segment("old-1", 8.5, 20.0, "This cue should not overlap the next one."),
             segment("old-2", 17.0, 21.0, "The next subtitle starts before the legacy cue ends."),
         ]
         new_segments = [
@@ -183,7 +306,7 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
             threshold=0.58,
         )
 
-        self.assertAlmostEqual(retimed[0].end_seconds, 17.18)
+        self.assertAlmostEqual(retimed[0].end_seconds, 15.0)
         self.assertLess(retimed[0].end_seconds, retimed[1].start_seconds)
 
     def test_split_legacy_cue_can_extend_last_split_segment_end(self) -> None:
@@ -225,8 +348,8 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         )
 
         self.assertEqual(retimed[0].end_seconds, 33.0)
-        self.assertEqual(retimed[1].end_seconds, 40.0)
-        self.assertIn("extended", retimed[1].retime_note or "")
+        self.assertEqual(retimed[1].end_seconds, 36.0)
+        self.assertNotIn("extended", retimed[1].retime_note or "")
         self.assertEqual(retimed[2].retime_status, "new-only")
         self.assertEqual(report.matched_segments, 2)
 
@@ -248,10 +371,10 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
             threshold=0.58,
         )
 
-        self.assertEqual(retimed[0].text, "Yes. That's right, Noah.")
+        self.assertEqual(retimed[0].text, "Yes.")
         self.assertEqual(retimed[0].retime_status, "matched")
-        self.assertIn("preserved the VTT tail", retimed[0].retime_note or "")
-        self.assertGreaterEqual(retimed[0].end_seconds, 26.4)
+        self.assertIn("VTT-only text was removed", retimed[0].retime_note or "")
+        self.assertEqual(retimed[0].end_seconds, 25.75)
         self.assertEqual(report.matched_segments, 2)
         self.assertEqual(report.low_confidence_segments, 0)
         self.assertEqual(report.unmatched_old_segments, 0)
@@ -279,10 +402,10 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
 
         self.assertEqual(
             retimed[0].text,
-            "Kate, are you okay or should we do the remaining five work packages?",
+            "Kate, are you okay",
         )
         self.assertEqual(retimed[0].retime_status, "matched")
-        self.assertIn("preserved the VTT tail", retimed[0].retime_note or "")
+        self.assertIn("VTT-only text was removed", retimed[0].retime_note or "")
         self.assertEqual(report.matched_segments, 1)
         self.assertEqual(report.low_confidence_segments, 0)
 
@@ -459,7 +582,7 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         self.assertEqual(report.matched_segments, 2)
         self.assertEqual(report.unmatched_new_segments, 0)
 
-    def test_low_confidence_subsequence_preserves_edited_vtt_when_new_ended_early(self) -> None:
+    def test_low_confidence_subsequence_projects_vtt_style_onto_current_mp4_text(self) -> None:
         # Use small, short cues so the alignment score falls below threshold but
         # the new timing text is still a clear prefix of the old one.
         old_segments = [
@@ -477,8 +600,9 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
             threshold=0.95,  # push threshold high to force the low-confidence path
         )
 
-        self.assertEqual(retimed[0].text, old_segments[0].text)
-        self.assertIn("preserved", (retimed[0].retime_note or "").lower())
+        self.assertEqual(retimed[0].text, "Welcome to our evms training")
+        self.assertEqual(retimed[0].end_seconds, 11.5)
+        self.assertIn("Current MP4", retimed[0].retime_note or "")
         # Confidence should match the underlying score, not be artificially bumped
         # above the high threshold (we trust the wording but not the score).
         self.assertGreaterEqual(report.matched_segments, 1)
@@ -769,7 +893,7 @@ class RetimeEditedSubtitleEndpointTests(unittest.TestCase):
         self.assertEqual(payload["retime_report"]["matched_segments"], 2)
         self.assertEqual(payload["retime_report"]["unmatched_new_segments"], 0)
 
-    def test_endpoint_preserves_uploaded_vtt_tail_when_current_text_is_prefix_only(self) -> None:
+    def test_endpoint_removes_uploaded_vtt_tail_when_current_mp4_text_is_prefix_only(self) -> None:
         app_main.jobs[0] = app_main.jobs[0].model_copy(
             update={
                 "transcript_segments": [
@@ -799,8 +923,9 @@ class RetimeEditedSubtitleEndpointTests(unittest.TestCase):
         )
 
         payload = response.model_dump()
-        self.assertEqual(payload["transcript_segments"][0]["text"], "Yes. That's right, Noah.")
-        self.assertIn("preserved the VTT tail", payload["transcript_segments"][0]["retime_note"])
+        self.assertEqual(payload["transcript_segments"][0]["text"], "Yes.")
+        self.assertEqual(payload["transcript_segments"][0]["end_seconds"], 25.75)
+        self.assertIn("VTT-only text was removed", payload["transcript_segments"][0]["retime_note"])
         self.assertEqual(payload["retime_report"]["matched_segments"], 2)
         self.assertEqual(payload["retime_report"]["low_confidence_segments"], 0)
 

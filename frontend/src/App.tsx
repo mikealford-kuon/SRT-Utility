@@ -139,7 +139,7 @@ type HealthResponse = {
   timestamp: string;
 };
 
-type JobStage = "queued" | "transcribing" | "aligned" | "diarized" | "ready";
+type JobStage = "queued" | "probing" | "transcribing" | "aligned" | "diarized" | "ready";
 
 type MediaMetadata = {
   file_name: string;
@@ -156,6 +156,7 @@ type JobSummary = {
   media_metadata?: MediaMetadata | null;
   transcription_mode: "placeholder" | "real-cli";
   transcription_source: string;
+  timing_source: string;
   stage: JobStage;
   progress_percent: number;
   created_at: string;
@@ -594,13 +595,22 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
     downloadBlobFile(blob, fileName);
   };
 
-  const loadJobs = async () => {
+  const loadJobs = async (): Promise<JobSummary[]> => {
     const response = await apiFetch(`${API_BASE_URL}/jobs`);
     if (!response.ok) {
       throw new Error(`jobs request failed (${response.status})`);
     }
     const data = (await response.json()) as JobSummary[];
     setJobs(data);
+    return data;
+  };
+
+  const loadJobDetailById = async (jobId: string): Promise<JobDetail> => {
+    const response = await apiFetch(`${API_BASE_URL}/jobs/${jobId}`);
+    if (!response.ok) {
+      throw new Error(await readErrorMessage(response));
+    }
+    return (await response.json()) as JobDetail;
   };
 
   const loadScormPackages = async () => {
@@ -698,6 +708,22 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
     () => jobs.find((job) => job.job_id === selectedJobId) ?? null,
     [jobs, selectedJobId],
   );
+  const selectedJobDetailForSelectedJob =
+    selectedJobDetail?.job_id === selectedJobId ? selectedJobDetail : null;
+  const editorJob = selectedJobDetailForSelectedJob ?? selectedJob;
+  const editorJobIsReady = editorJob?.stage === "ready";
+
+  useEffect(() => {
+    setSelectedJobDetail(null);
+    setSegmentDrafts([]);
+    setExpandedSegmentId(null);
+    setSegmentSaveMessage("");
+    setSegmentSaveMessageIsError(false);
+    setExportMessage("");
+    setExportMessageIsError(false);
+    setRetimeReport(null);
+    setShowLowConfidenceOnly(false);
+  }, [selectedJobId]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -714,11 +740,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
       }
       setJobDetailError("");
       try {
-        const response = await apiFetch(`${API_BASE_URL}/jobs/${selectedJobId}`);
-        if (!response.ok) {
-          throw new Error(await readErrorMessage(response));
-        }
-        const data = (await response.json()) as JobDetail;
+        const data = await loadJobDetailById(selectedJobId);
         if (!isActive) {
           return;
         }
@@ -751,20 +773,31 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   }, [selectedJobId]);
 
   useEffect(() => {
-    setSegmentDrafts(selectedJobDetail?.transcript_segments ?? []);
-    setExpandedSegmentId(selectedJobDetail?.transcript_segments?.[0]?.segment_id ?? null);
+    if (!selectedJobDetailForSelectedJob || selectedJobDetailForSelectedJob.stage !== "ready") {
+      setSegmentDrafts([]);
+      setExpandedSegmentId(null);
+      setSegmentSaveMessage("");
+      setSegmentSaveMessageIsError(false);
+      setExportMessage("");
+      setExportMessageIsError(false);
+      return;
+    }
+    setSegmentDrafts(selectedJobDetailForSelectedJob.transcript_segments ?? []);
+    setExpandedSegmentId(selectedJobDetailForSelectedJob.transcript_segments?.[0]?.segment_id ?? null);
     setSegmentSaveMessage("");
     setSegmentSaveMessageIsError(false);
     setExportMessage("");
     setExportMessageIsError(false);
-  }, [selectedJobDetail?.job_id, selectedJobDetail?.updated_at]);
+  }, [
+    selectedJobDetailForSelectedJob?.job_id,
+    selectedJobDetailForSelectedJob?.updated_at,
+    selectedJobDetailForSelectedJob?.stage,
+  ]);
 
   useEffect(() => {
     setRetimeReport(null);
     setShowLowConfidenceOnly(false);
-  }, [selectedJobDetail?.job_id]);
-
-  const editorJob = selectedJobDetail ?? selectedJob;
+  }, [selectedJobDetailForSelectedJob?.job_id]);
 
   useEffect(() => {
     if (!editorJob) {
@@ -795,14 +828,14 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
     : transcriptSegments;
   const canSubmitIngest = Boolean(selectedFile || mediaPath.trim());
   const hasUnsavedSegmentChanges = useMemo(() => {
-    if (!selectedJobDetail) {
+    if (!selectedJobDetailForSelectedJob || selectedJobDetailForSelectedJob.stage !== "ready") {
       return false;
     }
     return !transcriptSegmentsAreEqual(
-      selectedJobDetail.transcript_segments,
+      selectedJobDetailForSelectedJob.transcript_segments,
       transcriptSegments,
     );
-  }, [selectedJobDetail, transcriptSegments]);
+  }, [selectedJobDetailForSelectedJob, transcriptSegments]);
 
   const onIngest = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -843,10 +876,26 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
         throw new Error(await readErrorMessage(response));
       }
       const data = (await response.json()) as IngestResponse;
+      setSelectedJobId(data.job_id);
+      setSelectedJobDetail(null);
+      setSegmentDrafts([]);
+      setExpandedSegmentId(null);
+      setRetimeReport(null);
+      setShowLowConfidenceOnly(false);
+      setActiveStep("edit");
       setIngestMessageIsError(false);
       setIngestMessage(data.message);
       await loadJobs();
-      setSelectedJobId(data.job_id);
+      try {
+        const queuedDetail = await loadJobDetailById(data.job_id);
+        setSelectedJobDetail(queuedDetail);
+        if (queuedDetail.stage === "ready") {
+          setSegmentDrafts(queuedDetail.transcript_segments);
+          setExpandedSegmentId(queuedDetail.transcript_segments[0]?.segment_id ?? null);
+        }
+      } catch {
+        // The polling effect will retry while the ingest worker is starting.
+      }
       setMediaPath("");
       setSelectedFileName("");
       setSelectedFile(null);
@@ -893,7 +942,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
 
   const onApplyPreviousEditsFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const subtitleFile = event.target.files?.[0];
-    if (!subtitleFile || !selectedJobDetail) {
+    if (!subtitleFile || !selectedJobDetailForSelectedJob || !editorJobIsReady) {
       return;
     }
 
@@ -906,7 +955,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
       formData.append("file", subtitleFile);
       formData.append("confidence_threshold", "0.58");
       const response = await apiFetch(
-        `${API_BASE_URL}/jobs/${selectedJobDetail.job_id}/retime-edited-subtitles`,
+        `${API_BASE_URL}/jobs/${selectedJobDetailForSelectedJob.job_id}/retime-edited-subtitles`,
         {
           method: "POST",
           body: formData,
@@ -937,7 +986,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   };
 
   const onImportEmbeddedSubtitles = async () => {
-    if (!selectedJobDetail) {
+    if (!selectedJobDetailForSelectedJob || !editorJobIsReady) {
       return;
     }
 
@@ -946,7 +995,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
     setSegmentSaveMessageIsError(false);
     try {
       const response = await apiFetch(
-        `${API_BASE_URL}/jobs/${selectedJobDetail.job_id}/import-embedded-subtitles`,
+        `${API_BASE_URL}/jobs/${selectedJobDetailForSelectedJob.job_id}/import-embedded-subtitles`,
         {
           method: "POST",
           headers: {
@@ -981,7 +1030,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   };
 
   const onImportSidecarSubtitles = async () => {
-    if (!selectedJobDetail) {
+    if (!selectedJobDetailForSelectedJob || !editorJobIsReady) {
       return;
     }
 
@@ -990,7 +1039,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
     setSegmentSaveMessageIsError(false);
     try {
       const response = await apiFetch(
-        `${API_BASE_URL}/jobs/${selectedJobDetail.job_id}/import-sidecar-subtitles`,
+        `${API_BASE_URL}/jobs/${selectedJobDetailForSelectedJob.job_id}/import-sidecar-subtitles`,
         {
           method: "POST",
         },
@@ -1075,11 +1124,11 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   };
 
   const saveTranscriptSegments = async (): Promise<JobDetail> => {
-    if (!selectedJobDetail) {
+    if (!selectedJobDetailForSelectedJob || !editorJobIsReady) {
       throw new Error("No job selected.");
     }
     const response = await apiFetch(
-      `${API_BASE_URL}/jobs/${selectedJobDetail.job_id}/transcript`,
+      `${API_BASE_URL}/jobs/${selectedJobDetailForSelectedJob.job_id}/transcript`,
       {
         method: "PUT",
         headers: {
@@ -1099,8 +1148,8 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   };
 
   const ensureTranscriptSavedForExport = async () => {
-    if (!selectedJobDetail || !hasUnsavedSegmentChanges) {
-      return selectedJobDetail;
+    if (!selectedJobDetailForSelectedJob || !editorJobIsReady || !hasUnsavedSegmentChanges) {
+      return selectedJobDetailForSelectedJob;
     }
     setIsSavingSegments(true);
     setSegmentSaveMessage("Saving transcript edits before export...");
@@ -1122,7 +1171,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   };
 
   const onSaveSegments = async () => {
-    if (!selectedJobDetail) {
+    if (!selectedJobDetailForSelectedJob || !editorJobIsReady) {
       return;
     }
     setIsSavingSegments(true);
@@ -1175,7 +1224,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   };
 
   const onExport = async (format: "srt" | "vtt") => {
-    if (!editorJob) {
+    if (!editorJob || !editorJobIsReady) {
       return;
     }
     const requestedBaseName = exportBaseName.trim();
@@ -1240,14 +1289,14 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   };
 
   const onCreateStoredTrack = async (track: SubtitleTrackMetadataDraft) => {
-    if (!selectedJobDetail) {
+    if (!selectedJobDetailForSelectedJob || !editorJobIsReady) {
       return;
     }
     setIsCreatingTrack(true);
     setSegmentSaveMessage("");
     setSegmentSaveMessageIsError(false);
     try {
-      const response = await apiFetch(`${API_BASE_URL}/jobs/${selectedJobDetail.job_id}/subtitle-tracks`, {
+      const response = await apiFetch(`${API_BASE_URL}/jobs/${selectedJobDetailForSelectedJob.job_id}/subtitle-tracks`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1278,14 +1327,14 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   };
 
   const onDeleteStoredTrack = async (trackId: string) => {
-    if (!selectedJobDetail) {
+    if (!selectedJobDetailForSelectedJob || !editorJobIsReady) {
       return;
     }
     setIsCreatingTrack(true);
     setSegmentSaveMessage("");
     setSegmentSaveMessageIsError(false);
     try {
-      const response = await apiFetch(`${API_BASE_URL}/jobs/${selectedJobDetail.job_id}/subtitle-tracks/${trackId}`, {
+      const response = await apiFetch(`${API_BASE_URL}/jobs/${selectedJobDetailForSelectedJob.job_id}/subtitle-tracks/${trackId}`, {
         method: "DELETE",
       });
       if (!response.ok) {
@@ -1413,16 +1462,16 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   }, [jobs, selectedJob]);
 
   const artifactGroups = useMemo(() => {
-    const artifacts = selectedJobDetail?.artifacts ?? [];
+    const artifacts = selectedJobDetailForSelectedJob?.artifacts ?? [];
     return {
       subtitle: artifacts.filter((artifact) => artifact.artifact_kind.startsWith("transcript-")),
       media: artifacts.filter((artifact) => artifact.artifact_kind.startsWith("video-")),
       package: artifacts.filter((artifact) => artifact.artifact_kind.startsWith("package-")),
     };
-  }, [selectedJobDetail?.artifacts]);
+  }, [selectedJobDetailForSelectedJob?.artifacts]);
 
   const onBuildPackage = async (format: PackageFormat) => {
-    if (!editorJob) {
+    if (!editorJob || !editorJobIsReady) {
       return;
     }
     const requestedBaseName = exportBaseName.trim();
@@ -1457,7 +1506,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   };
 
   const onExportSoftsubMp4 = async () => {
-    if (!editorJob) {
+    if (!editorJob || !editorJobIsReady) {
       return;
     }
     const outputDir = softsubOutputDir.trim();
@@ -1490,7 +1539,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
           output_path: shouldDownloadToBrowser ? null : outputPath,
           output_filename: outputName,
           download: false,
-          track_ids: selectedJobDetail?.subtitle_tracks
+          track_ids: selectedJobDetailForSelectedJob?.subtitle_tracks
             ?.filter((track) => track.is_active)
             .map((track) => track.track_id) ?? [],
         }),
@@ -1574,8 +1623,31 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                 })}
             </div>
             <div className="workflow-summary">
+              {jobs.length > 0 ? (
+                <label className="project-picker">
+                  <span>Project</span>
+                  <select
+                    value={selectedJobId ?? ""}
+                    onChange={(event) => {
+                      const nextJobId = event.target.value || null;
+                      setSelectedJobId(nextJobId);
+                      setSelectedJobDetail(null);
+                      setSegmentDrafts([]);
+                      setExpandedSegmentId(null);
+                      setRetimeReport(null);
+                      setShowLowConfidenceOnly(false);
+                    }}
+                  >
+                    {jobs.map((job) => (
+                      <option key={job.job_id} value={job.job_id}>
+                        {job.media_metadata?.file_name ?? summarizePath(job.media_path)} · {job.stage}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <p><strong>Project:</strong> {editorJob ? summarizePath(editorJob.media_path) : "No project loaded"}</p>
-              <p><strong>Status:</strong> {selectedJobDetail?.stage ?? selectedJob?.stage ?? "Idle"}</p>
+              <p><strong>Status:</strong> {editorJob?.stage ?? "Idle"}</p>
               <p><strong>Draft:</strong> {hasUnsavedDraft ? "Unsaved changes" : "Saved"}</p>
               {editorJob ? (
                 <div className="ingest-progress-card">
@@ -1771,6 +1843,10 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                     <dt>Transcript Source</dt>
                     <dd>{editorJob.transcription_source}</dd>
                   </div>
+                  <div>
+                    <dt>Timing Source</dt>
+                    <dd>{editorJob.timing_source}</dd>
+                  </div>
                   {editorJob.media_metadata ? (
                     <>
                       <div>
@@ -1814,7 +1890,18 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
               ) : (
                 <p className="muted">No loaded video selected yet. Start in Load Assets, then return here to edit subtitles.</p>
               )}
-              {editorJob ? (
+              {editorJob && !editorJobIsReady ? (
+                <div className="asset-summary-card">
+                  <p className="subtitle-panel-title">Transcription still in progress</p>
+                  <p className="muted">
+                    The editor will load the actual MP4 timings after this job reaches ready. Current stage: {editorJob.stage}.
+                  </p>
+                  <div className="progress-track" aria-hidden="true">
+                    <div className="progress-fill" style={{ width: `${editorJob.progress_percent}%` }} />
+                  </div>
+                  <p className="muted">{editorJob.progress_percent}% complete</p>
+                </div>
+              ) : editorJob ? (
                 <div className="subtitle-panel">
                   <div className="subtitle-panel-header">
                     <div>
@@ -1887,7 +1974,8 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                           className="secondary-btn"
                           onClick={() => void onSaveSegments()}
                           disabled={
-                            !selectedJobDetail ||
+                            !selectedJobDetailForSelectedJob ||
+                            !editorJobIsReady ||
                             isLoadingJobDetail ||
                             isSavingSegments ||
                             isRetimingSubtitles ||
@@ -1967,7 +2055,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                                             event.target.value,
                                           )
                                         }
-                                        disabled={!selectedJobDetail || isSavingSegments}
+                                        disabled={!selectedJobDetailForSelectedJob || !editorJobIsReady || isSavingSegments}
                                       />
                                     </label>
                                     <label className="subtitle-edit-field">
@@ -1984,7 +2072,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                                             event.target.value,
                                           )
                                         }
-                                        disabled={!selectedJobDetail || isSavingSegments}
+                                        disabled={!selectedJobDetailForSelectedJob || !editorJobIsReady || isSavingSegments}
                                       />
                                     </label>
                                     <div className="subtitle-time subtitle-time-secondary">
@@ -2009,7 +2097,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                                       value={segment.text}
                                       onChange={(event) => onSegmentTextChange(index, event.target.value)}
                                       rows={3}
-                                      disabled={!selectedJobDetail || isSavingSegments}
+                                      disabled={!selectedJobDetailForSelectedJob || !editorJobIsReady || isSavingSegments}
                                     />
                                   </label>
                                   <label className="subtitle-edit-field subtitle-speaker-edit">
@@ -2021,7 +2109,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                                         onSegmentSpeakerChange(index, event.target.value)
                                       }
                                       placeholder="Optional"
-                                      disabled={!selectedJobDetail || isSavingSegments}
+                                      disabled={!selectedJobDetailForSelectedJob || !editorJobIsReady || isSavingSegments}
                                     />
                                   </label>
                                 </>
@@ -2064,7 +2152,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                   value={exportBaseName}
                   onChange={(event) => setExportBaseName(event.target.value)}
                   placeholder="Master 09"
-                  disabled={!editorJob || exportingFormat !== null}
+                  disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                 />
               </label>
               <p className="muted">Used for SRT, VTT, and package filenames so deliveries stay consistent and human-readable.</p>
@@ -2076,14 +2164,14 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
               <button
                 type="button"
                 onClick={() => void onExport("srt")}
-                disabled={!editorJob || exportingFormat !== null}
+                disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
               >
                 {exportingFormat === "srt" ? "Exporting..." : "Export SRT"}
               </button>
               <button
                 type="button"
                 onClick={() => void onExport("vtt")}
-                disabled={!editorJob || exportingFormat !== null}
+                disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
               >
                 {exportingFormat === "vtt" ? "Exporting..." : "Export VTT"}
               </button>
@@ -2098,7 +2186,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                   value={softsubLanguage}
                   onChange={(event) => setSoftsubLanguage(event.target.value)}
                   placeholder="eng"
-                  disabled={!editorJob || exportingFormat !== null}
+                  disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                 />
               </label>
               <label className="subtitle-edit-field">
@@ -2108,15 +2196,15 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                   value={softsubLabel}
                   onChange={(event) => setSoftsubLabel(event.target.value)}
                   placeholder="English Subtitles"
-                  disabled={!editorJob || exportingFormat !== null}
+                  disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                 />
               </label>
               <div className="subtitle-panel-header">
                 <p className="subtitle-panel-title">Stored Subtitle Tracks</p>
               </div>
-              {selectedJobDetail?.subtitle_tracks?.length ? (
+              {selectedJobDetailForSelectedJob?.subtitle_tracks?.length ? (
                 <ul className="subtitle-list">
-                  {selectedJobDetail.subtitle_tracks.map((track) => (
+                  {selectedJobDetailForSelectedJob.subtitle_tracks.map((track) => (
                     <li className="subtitle-item" key={track.track_id}>
                       <div><strong>{track.label}</strong> ({track.language})</div>
                       <div className="muted">{track.track_id} · {track.source_kind} · {track.format_name}</div>
@@ -2127,7 +2215,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                           type="button"
                           className="secondary-btn"
                           onClick={() => void onDeleteStoredTrack(track.track_id)}
-                          disabled={isCreatingTrack || exportingFormat !== null}
+                          disabled={!editorJobIsReady || isCreatingTrack || exportingFormat !== null}
                         >
                           Remove Track
                         </button>
@@ -2144,7 +2232,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                   type="button"
                   className="secondary-btn"
                   onClick={onAddAdditionalTrack}
-                  disabled={!editorJob || exportingFormat !== null}
+                  disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                 >
                   Add Track
                 </button>
@@ -2164,7 +2252,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                             onAdditionalTrackChange(index, "language", event.target.value)
                           }
                           placeholder="spa"
-                          disabled={!editorJob || exportingFormat !== null}
+                          disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                         />
                       </label>
                       <label className="subtitle-edit-field">
@@ -2176,7 +2264,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                             onAdditionalTrackChange(index, "label", event.target.value)
                           }
                           placeholder="Spanish Subtitles"
-                          disabled={!editorJob || exportingFormat !== null}
+                          disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                         />
                       </label>
                       <label className="subtitle-edit-field">
@@ -2188,7 +2276,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                             onAdditionalTrackChange(index, "subtitle_path", event.target.value)
                           }
                           placeholder="/Users/kuon/Desktop/spanish.srt"
-                          disabled={!editorJob || exportingFormat !== null}
+                          disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                         />
                       </label>
                       <label className="subtitle-edit-field">
@@ -2199,7 +2287,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                           onChange={(event) =>
                             onAdditionalTrackChange(index, "is_default", event.target.checked)
                           }
-                          disabled={!editorJob || exportingFormat !== null}
+                          disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                         />
                       </label>
                       <div className="subtitle-panel-header">
@@ -2207,7 +2295,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                           type="button"
                           className="secondary-btn"
                           onClick={() => void onCreateStoredTrack(track)}
-                          disabled={!editorJob || exportingFormat !== null || isCreatingTrack || !track.subtitle_path.trim()}
+                          disabled={!editorJob || !editorJobIsReady || exportingFormat !== null || isCreatingTrack || !track.subtitle_path.trim()}
                         >
                           {isCreatingTrack ? "Saving..." : "Save as Track"}
                         </button>
@@ -2215,7 +2303,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                           type="button"
                           className="secondary-btn"
                           onClick={() => onRemoveAdditionalTrack(index)}
-                          disabled={!editorJob || exportingFormat !== null || isCreatingTrack}
+                          disabled={!editorJob || !editorJobIsReady || exportingFormat !== null || isCreatingTrack}
                         >
                           Remove Draft
                         </button>
@@ -2229,7 +2317,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                 <select
                   value={softsubExportMode}
                   onChange={(event) => setSoftsubExportMode(event.target.value as SoftsubExportMode)}
-                  disabled={!editorJob || exportingFormat !== null}
+                  disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                 >
                   <option value="browser">Download in browser (recommended)</option>
                   <option value="host">Save on host machine</option>
@@ -2243,7 +2331,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                     value={softsubOutputDir}
                     onChange={(event) => setSoftsubOutputDir(event.target.value)}
                     placeholder="/Users/kuon/Desktop"
-                    disabled={!editorJob || exportingFormat !== null}
+                    disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                   />
                 </label>
               ) : (
@@ -2256,13 +2344,13 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                   value={softsubOutputName}
                   onChange={(event) => setSoftsubOutputName(event.target.value)}
                   placeholder="Master 09.softsubs.mp4"
-                  disabled={!editorJob || exportingFormat !== null}
+                  disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                 />
               </label>
               <button
                 type="button"
                 onClick={() => void onExportSoftsubMp4()}
-                disabled={!editorJob || exportingFormat !== null}
+                disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
               >
                 {exportingFormat === "mp4-softsub"
                   ? "Exporting..."
@@ -2281,7 +2369,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                     type="button"
                     className="package-card"
                     onClick={() => void onBuildPackage(option.format)}
-                    disabled={!editorJob || exportingFormat !== null}
+                    disabled={!editorJob || !editorJobIsReady || exportingFormat !== null}
                   >
                     <strong>{exportingFormat === option.format ? "Building..." : option.label}</strong>
                     <span>{option.description}</span>
@@ -2291,7 +2379,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
               </div>
             ) : null}
 
-            {selectedJobDetail?.artifacts?.length ? (
+            {selectedJobDetailForSelectedJob?.artifacts?.length ? (
               <>
               <div className="deliverables-header">
                 <div>

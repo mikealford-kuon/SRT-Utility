@@ -229,6 +229,30 @@ body {
   gap: 12px;
 }
 
+.project-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.project-picker span {
+  color: #93c5fd;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.project-picker select {
+  width: 100%;
+  min-height: 42px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: rgba(15, 23, 42, 0.85);
+  color: #e2e8f0;
+  padding: 8px 10px;
+  font: inherit;
+}
+
 .panel {
   background: rgba(11, 18, 34, 0.86);
   border: 1px solid #22304a;

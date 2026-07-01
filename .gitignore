@@ -15,6 +15,10 @@ frontend/dist/
 frontend/.run/
 *.log
 *.pid
+backend/app/data/uploads/
+backend/app/data/artifacts/
+backend/app/data/tracks/
+backend/app/data/jobs.json
 
 # Local test scratch
 .tmp-e2e/

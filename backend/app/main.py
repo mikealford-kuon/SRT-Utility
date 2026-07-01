@@ -2265,15 +2265,12 @@ def is_low_confidence_clip_preservable(
     confidence: float,
     threshold: float,
 ) -> tuple[bool, str | None]:
-    """When the alignment engine reports low confidence, decide whether the
-    previously edited VTT text is still safe to keep.
+    """When alignment confidence is low, decide whether VTT style is usable.
 
-    The current-timing text can drop, reorder, or partially truncate words
-    without the alignment score catching it. Falling back to the new (often
-    lower-quality) text in those cases silently discards the user's prior
-    edits, which is what the recurring "tail-clipped comment" bug has been.
-    Preserving the old text is appropriate when the new text is a subsequence
-    of the old one and the timing overlaps meaningfully.
+    The current MP4 transcript supplies the real insert/delete structure.
+    This helper only decides whether enough of the uploaded VTT cue overlaps
+    to safely borrow its casing, spelling, and punctuation for the matching
+    words.
     """
     old_text = old_segment.text or ""
     new_text = new_segment.text or ""
@@ -2302,14 +2299,14 @@ def is_low_confidence_clip_preservable(
     if start_overlap and end_truncates_old and new_is_subsequence_of_old:
         return (
             True,
-            "New timing text was a prefix of the uploaded VTT cue and ended earlier; "
-            "the previously edited VTT text was preserved to avoid clipping the tail.",
+            "Current MP4 text was a subsequence of the uploaded VTT cue; "
+            "matching VTT wording was projected onto the current MP4 text.",
         )
     if start_overlap and old_is_subsequence_of_new and overlap >= 0.78 and confidence >= max(0.45, threshold - 0.15):
         return (
             True,
-            "Upload timing was very close to the previously edited VTT cue; "
-            "the uploaded VTT text was preserved verbatim.",
+            "Uploaded VTT text overlapped the current MP4 transcript closely; "
+            "matching VTT wording was projected onto the current MP4 text.",
         )
     return False, None
 
@@ -2436,6 +2433,128 @@ def split_corrected_text_across_timing_segments(
         return None
 
     return chunks_from_matches([(0, first_chunk_end_token), *trailing_matches])
+
+
+def subtitle_text_span(
+    *,
+    text: str,
+    spans: list[tuple[str, int, int]],
+    start_index: int,
+    end_index: int,
+) -> str:
+    if not spans or start_index < 0 or end_index < start_index:
+        return ""
+    char_start = 0 if start_index == 0 else spans[start_index][1]
+    char_end = spans[end_index + 1][1] if end_index + 1 < len(spans) else len(text)
+    return text[char_start:char_end].strip(" \t\r\n-–—")
+
+
+def join_projected_subtitle_pieces(pieces: list[str]) -> str:
+    joined = " ".join(piece.strip() for piece in pieces if piece.strip())
+    joined = re.sub(r"\s+([,.;:!?])", r"\1", joined)
+    joined = re.sub(r"([¿¡])\s+", r"\1", joined)
+    joined = re.sub(r"\s+", " ", joined)
+    return joined.strip()
+
+
+def collapsed_token_string(tokens: list[str]) -> str:
+    return "".join(tokens)
+
+
+def project_edited_text_to_current_structure(*, edited_text: str, current_text: str) -> str:
+    """Use current MP4 transcript structure while preserving matching VTT style.
+
+    The current transcript supplies the insert/delete shape for an edited MP4.
+    Where its tokens still align with the uploaded VTT, the VTT's casing,
+    punctuation, and spelling win. Old VTT-only words are intentionally
+    skipped, and current MP4-only words are intentionally inserted.
+    """
+    edited_spans = subtitle_token_spans(edited_text)
+    current_spans = subtitle_token_spans(current_text)
+    if not edited_spans or not current_spans:
+        return edited_text if normalize_subtitle_match_text(edited_text) == normalize_subtitle_match_text(current_text) else current_text
+
+    edited_tokens = [token for token, _, _ in edited_spans]
+    current_tokens = [token for token, _, _ in current_spans]
+    if edited_tokens == current_tokens:
+        return edited_text.strip()
+
+    current_subsequence_start = find_token_subsequence(
+        edited_tokens,
+        current_tokens,
+        start_at=0,
+    )
+    if current_subsequence_start is not None:
+        projected = subtitle_text_span(
+            text=edited_text,
+            spans=edited_spans,
+            start_index=current_subsequence_start,
+            end_index=current_subsequence_start + len(current_tokens) - 1,
+        )
+        return projected or current_text.strip()
+
+    pieces: list[str] = []
+    matcher = SequenceMatcher(None, edited_tokens, current_tokens)
+    for tag, edited_start, edited_end, current_start, current_end in matcher.get_opcodes():
+        if tag == "equal":
+            pieces.append(
+                subtitle_text_span(
+                    text=edited_text,
+                    spans=edited_spans,
+                    start_index=edited_start,
+                    end_index=edited_end - 1,
+                )
+            )
+            continue
+        if tag == "delete":
+            continue
+        if tag == "insert":
+            pieces.append(
+                subtitle_text_span(
+                    text=current_text,
+                    spans=current_spans,
+                    start_index=current_start,
+                    end_index=current_end - 1,
+                )
+            )
+            continue
+
+        edited_block = edited_tokens[edited_start:edited_end]
+        current_block = current_tokens[current_start:current_end]
+        edited_block_text = subtitle_text_span(
+            text=edited_text,
+            spans=edited_spans,
+            start_index=edited_start,
+            end_index=edited_end - 1,
+        )
+        current_block_text = subtitle_text_span(
+            text=current_text,
+            spans=current_spans,
+            start_index=current_start,
+            end_index=current_end - 1,
+        )
+        if (
+            edited_block
+            and current_block
+            and collapsed_token_string(edited_block) == collapsed_token_string(current_block)
+        ):
+            pieces.append(edited_block_text)
+        elif (
+            len(edited_block) == len(current_block)
+            and edited_block
+            and SequenceMatcher(
+                None,
+                " ".join(edited_block),
+                " ".join(current_block),
+            ).ratio()
+            >= 0.82
+        ):
+            pieces.append(edited_block_text)
+        else:
+            pieces.append(current_block_text)
+
+    projected_text = join_projected_subtitle_pieces(pieces)
+    return projected_text or current_text.strip()
 
 
 def collapse_short_trailing_split_chunks(
@@ -2865,40 +2984,120 @@ def align_subtitle_segments_by_text(
     return aligned
 
 
-def extend_segment_end_from_compatible_legacy_timing(
+def extend_segment_end_to_mated_vtt_cue(
     *,
     segment: TranscriptSegment,
     old_segment: TranscriptSegment,
     next_timing_segment: TranscriptSegment | None,
-    group_start_seconds: float,
     threshold: float,
     confidence: float,
-    allow_prefix_clip_extension: bool = False,
 ) -> tuple[TranscriptSegment, str | None]:
-    """Keep trusted legacy cue endings when WhisperX ends a matched cue too early."""
-    if confidence < max(threshold, 0.9) and not allow_prefix_clip_extension:
+    """Repair too-short MP4 alignment ends when the uploaded VTT cue is mated.
+
+    WhisperX can produce a word-span end that is far too early for a full
+    narration caption. We only trust the uploaded VTT end when its cue starts
+    at essentially the same time as the MP4-derived cue and it does not overlap
+    the next MP4-derived cue.
+    """
+    if confidence < max(threshold, 0.88):
+        return segment, None
+    if abs(old_segment.start_seconds - segment.start_seconds) > 0.35:
+        return segment, None
+    if old_segment.end_seconds <= segment.end_seconds + 0.5:
         return segment, None
 
-    legacy_end = old_segment.end_seconds
-    if legacy_end <= segment.end_seconds + 0.25:
-        return segment, None
-
-    start_tolerance = 4.0 if allow_prefix_clip_extension else 1.75
-    if abs(old_segment.start_seconds - group_start_seconds) > start_tolerance:
-        return segment, None
-
-    max_allowed_end = legacy_end
+    max_allowed_end = old_segment.end_seconds
     if next_timing_segment is not None and next_timing_segment.start_seconds > segment.start_seconds:
         max_allowed_end = min(max_allowed_end, next_timing_segment.start_seconds - 0.02)
 
     adjusted_end = round(max(segment.end_seconds, max_allowed_end), 3)
-    if adjusted_end <= segment.end_seconds + 0.25:
+    if adjusted_end <= segment.end_seconds + 0.5:
         return segment, None
 
     return (
         segment.model_copy(update={"end_seconds": adjusted_end}),
-        "End timing was extended from the uploaded VTT because the current alignment ended this matched cue early.",
+        "End timing was extended to the mated VTT cue end because the MP4 alignment ended this narration cue early.",
     )
+
+
+def subtitle_reading_pressure(segment: TranscriptSegment) -> float:
+    duration = max(segment.end_seconds - segment.start_seconds, 0.01)
+    visible_character_count = len(re.sub(r"\s+", "", segment.text))
+    return visible_character_count / duration
+
+
+def repair_dense_caption_timing_gaps(
+    segments: list[TranscriptSegment],
+    *,
+    source_label: str,
+) -> list[TranscriptSegment]:
+    """Smooth current MP4 timings when a dense caption is cut off before a large gap.
+
+    Some local transcribers occasionally assign a long spoken caption to a very
+    short timestamp span, then leave a large empty gap before the next cue. The
+    MP4 timing remains authoritative, but the cue should stay visible through
+    that gap instead of disappearing while the narration text is still being
+    read/reviewed.
+    """
+    repaired: list[TranscriptSegment] = []
+    for index, segment in enumerate(segments):
+        next_segment = segments[index + 1] if index + 1 < len(segments) else None
+        repaired_segment, note = repair_dense_caption_timing_gap(
+            segment=segment,
+            next_timing_segment=next_segment,
+            source_label=source_label,
+        )
+        if note:
+            repaired_segment = repaired_segment.model_copy(
+                update={
+                    "retime_note": (
+                        f"{segment.retime_note} {note}"
+                        if segment.retime_note
+                        else note
+                    ),
+                }
+            )
+        repaired.append(repaired_segment)
+
+    return repaired
+
+
+def repair_dense_caption_timing_gap(
+    *,
+    segment: TranscriptSegment,
+    next_timing_segment: TranscriptSegment | None,
+    source_label: str,
+) -> tuple[TranscriptSegment, str | None]:
+    minimum_gap_after_dense_caption = 4.0
+    preserve_gap_before_next_caption = 1.5
+    maximum_caption_duration = 15.5
+
+    if next_timing_segment is None:
+        return segment, None
+
+    duration = segment.end_seconds - segment.start_seconds
+    gap_after = next_timing_segment.start_seconds - segment.end_seconds
+    word_count = len(subtitle_word_tokens(segment.text))
+    pressure = subtitle_reading_pressure(segment)
+
+    is_dense_caption = word_count >= 10 and (duration < 4.0 or pressure > 24.0)
+    has_safe_gap = gap_after >= minimum_gap_after_dense_caption
+    if not is_dense_caption or not has_safe_gap:
+        return segment, None
+
+    safe_end = min(
+        next_timing_segment.start_seconds - preserve_gap_before_next_caption,
+        segment.start_seconds + maximum_caption_duration,
+    )
+    safe_end = round(max(segment.end_seconds, safe_end), 3)
+    if safe_end <= segment.end_seconds + 0.5:
+        return segment, None
+
+    note = (
+        f"Dense caption timing was extended from {source_label} because the current MP4 timing left "
+        "a large empty gap after an implausibly short caption."
+    )
+    return segment.model_copy(update={"end_seconds": safe_end}), note
 
 
 def find_merged_old_cue_overrides(
@@ -2995,8 +3194,7 @@ def retime_edited_subtitle_segments(
         new_timing_segments=new_timing_segments,
     )
     split_text_by_new_index: dict[int, tuple[int, str, float]] = {}
-    split_group_start_by_new_index: dict[int, float] = {}
-    split_group_last_new_indexes: set[int] = set()
+    split_end_by_new_index: dict[int, float] = {}
     skipped_split_new_indexes: set[int] = set()
     for alignment_index, (old_index, new_index, confidence) in enumerate(alignments):
         if old_index is None or new_index is None or confidence < threshold:
@@ -3079,8 +3277,10 @@ def retime_edited_subtitle_segments(
             if not effective_new_indexes:
                 continue
 
-            split_group_start = new_timing_segments[best_new_indexes[0]].start_seconds
-            split_group_last_new_indexes.add(effective_new_indexes[-1])
+            if best_skipped_new_indexes:
+                split_end_by_new_index[effective_new_indexes[-1]] = new_timing_segments[
+                    best_new_indexes[-1]
+                ].end_seconds
             skipped_split_new_indexes.update(best_skipped_new_indexes)
             for covered_new_index, chunk_text in zip(best_new_indexes, best_split):
                 if covered_new_index in best_skipped_new_indexes:
@@ -3093,7 +3293,6 @@ def retime_edited_subtitle_segments(
                     chunk_text,
                     best_split_confidence,
                 )
-                split_group_start_by_new_index[covered_new_index] = split_group_start
     merged_old_cues_by_new_index = find_merged_old_cue_overrides(
         alignments=alignments,
         old_segments=old_segments,
@@ -3149,23 +3348,13 @@ def retime_edited_subtitle_segments(
             old_segment_id = old_segment.segment_id
             matched_old_indexes.add(split_old_index)
             status = "matched"
-            note = "Previous edited VTT cue was split across current timing segments."
+            note = "Previous edited VTT cue was split across current MP4 timing segments."
             timed_segment = new_segment
-            timing_note = None
-            if new_index in split_group_last_new_indexes:
-                timed_segment, timing_note = extend_segment_end_from_compatible_legacy_timing(
-                    segment=new_segment,
-                    old_segment=old_segment,
-                    next_timing_segment=next_timing_segment,
-                    group_start_seconds=split_group_start_by_new_index.get(
-                        new_index,
-                        new_segment.start_seconds,
-                    ),
-                    threshold=threshold,
-                    confidence=split_confidence,
+            if new_index in split_end_by_new_index:
+                timed_segment = new_segment.model_copy(
+                    update={"end_seconds": split_end_by_new_index[new_index]}
                 )
-                if timing_note:
-                    note = f"{note} {timing_note}"
+                note = f"{note} A tiny MP4 timing fragment was kept attached to the preceding cue."
             next_segment = timed_segment.model_copy(
                 update={
                     "text": split_text,
@@ -3200,15 +3389,31 @@ def retime_edited_subtitle_segments(
             old_segment_id = old_segments[merged_old_indexes[0]].segment_id
             matched_old_indexes.update(merged_old_indexes)
             status = "matched"
-            note = "Multiple previous VTT cues were merged into this current timing segment."
+            projected_text = project_edited_text_to_current_structure(
+                edited_text=merged_text,
+                current_text=new_segment.text,
+            )
+            projected_text, applied, suggested = apply_correction_suggestions_to_text(
+                projected_text,
+                learned_corrections,
+            )
+            correction_suggestions = [*applied, *suggested]
+            applied_correction_count += len(applied)
+            note = "Multiple previous VTT cues were merged into this current MP4 timing segment."
+            if normalize_subtitle_match_text(projected_text) != normalize_subtitle_match_text(merged_text):
+                note = f"{note} Current MP4 insert/delete structure was preserved."
+            if applied:
+                note = f"{note} Learned corrections were auto-applied."
+            elif suggested:
+                note = f"{note} Possible repeated VTT errors need review."
             next_segment = new_segment.model_copy(
                 update={
-                    "text": merged_text,
+                    "text": projected_text,
                     "speaker": old_segments[merged_old_indexes[0]].speaker,
                     "retime_confidence": round(merge_confidence, 3),
                     "retime_status": status,
                     "retime_note": note,
-                    "correction_suggestions": [],
+                    "correction_suggestions": correction_suggestions,
                 }
             )
             confidence_values.append(merge_confidence)
@@ -3220,7 +3425,7 @@ def retime_edited_subtitle_segments(
                     confidence=round(merge_confidence, 3),
                     status=status,
                     note=note,
-                    correction_suggestions=[],
+                    correction_suggestions=correction_suggestions,
                 )
             )
             continue
@@ -3258,22 +3463,39 @@ def retime_edited_subtitle_segments(
         elif confidence >= threshold:
             matched_old_indexes.add(old_index)
             status = "matched"
-            timed_segment, timing_note = extend_segment_end_from_compatible_legacy_timing(
-                segment=new_segment,
-                old_segment=old_segment,
-                next_timing_segment=next_timing_segment,
-                group_start_seconds=new_segment.start_seconds,
-                threshold=threshold,
-                confidence=confidence,
+            projected_text = project_edited_text_to_current_structure(
+                edited_text=old_segment.text,
+                current_text=new_segment.text,
             )
+            projected_text, applied, suggested = apply_correction_suggestions_to_text(
+                projected_text,
+                learned_corrections,
+            )
+            correction_suggestions = [*applied, *suggested]
+            applied_correction_count += len(applied)
+            if normalize_subtitle_match_text(projected_text) != normalize_subtitle_match_text(old_segment.text):
+                note = "Current MP4 insert/delete structure was preserved while applying matching VTT wording."
+            if applied:
+                note = f"{note or 'Matching VTT wording was applied.'} Learned corrections were auto-applied."
+            elif suggested:
+                note = f"{note or 'Matching VTT wording was applied.'} Possible repeated VTT errors need review."
+            timed_segment, timing_note = repair_dense_caption_timing_gap(
+                segment=new_segment,
+                next_timing_segment=next_timing_segment,
+                source_label="current MP4",
+            )
+            if timing_note is None:
+                timing_note = new_segment.retime_note
+            if timing_note:
+                note = f"{note} {timing_note}" if note else timing_note
             next_segment = timed_segment.model_copy(
                 update={
-                    "text": old_segment.text,
+                    "text": projected_text,
                     "speaker": old_segment.speaker,
                     "retime_confidence": round(confidence, 3),
                     "retime_status": status,
-                    "retime_note": timing_note,
-                    "correction_suggestions": [],
+                    "retime_note": note,
+                    "correction_suggestions": correction_suggestions,
                 }
             )
             confidence_values.append(confidence)
@@ -3287,26 +3509,29 @@ def retime_edited_subtitle_segments(
             matched_old_indexes.add(old_index)
             status = "matched"
             prefix_confidence = max(confidence, threshold)
-            timed_segment, timing_note = extend_segment_end_from_compatible_legacy_timing(
-                segment=new_segment,
-                old_segment=old_segment,
-                next_timing_segment=next_timing_segment,
-                group_start_seconds=new_segment.start_seconds,
-                threshold=threshold,
-                confidence=prefix_confidence,
-                allow_prefix_clip_extension=True,
+            projected_text = project_edited_text_to_current_structure(
+                edited_text=old_segment.text,
+                current_text=new_segment.text,
             )
-            note = preserve_explanation
-            if timing_note:
-                note = f"{note} {timing_note}"
-            next_segment = timed_segment.model_copy(
+            projected_text, applied, suggested = apply_correction_suggestions_to_text(
+                projected_text,
+                learned_corrections,
+            )
+            correction_suggestions = [*applied, *suggested]
+            applied_correction_count += len(applied)
+            note = f"{preserve_explanation} Current MP4 insert/delete structure and timing were preserved."
+            if applied:
+                note = f"{note} Learned corrections were auto-applied."
+            elif suggested:
+                note = f"{note} Possible repeated VTT errors need review."
+            next_segment = new_segment.model_copy(
                 update={
-                    "text": old_segment.text,
+                    "text": projected_text,
                     "speaker": old_segment.speaker,
                     "retime_confidence": round(prefix_confidence, 3),
                     "retime_status": status,
                     "retime_note": note,
-                    "correction_suggestions": [],
+                    "correction_suggestions": correction_suggestions,
                 }
             )
             confidence_values.append(prefix_confidence)
@@ -3314,26 +3539,29 @@ def retime_edited_subtitle_segments(
             matched_old_indexes.add(old_index)
             status = "matched"
             prefix_confidence = max(confidence, threshold)
-            timed_segment, timing_note = extend_segment_end_from_compatible_legacy_timing(
-                segment=new_segment,
-                old_segment=old_segment,
-                next_timing_segment=next_timing_segment,
-                group_start_seconds=new_segment.start_seconds,
-                threshold=threshold,
-                confidence=prefix_confidence,
-                allow_prefix_clip_extension=True,
+            projected_text = project_edited_text_to_current_structure(
+                edited_text=old_segment.text,
+                current_text=new_segment.text,
             )
-            note = "Current timing text only contained the start of the uploaded VTT cue; preserved the VTT tail."
-            if timing_note:
-                note = f"{note} {timing_note}"
-            next_segment = timed_segment.model_copy(
+            projected_text, applied, suggested = apply_correction_suggestions_to_text(
+                projected_text,
+                learned_corrections,
+            )
+            correction_suggestions = [*applied, *suggested]
+            applied_correction_count += len(applied)
+            note = "Current MP4 text only contained part of the uploaded VTT cue; VTT-only text was removed."
+            if applied:
+                note = f"{note} Learned corrections were auto-applied."
+            elif suggested:
+                note = f"{note} Possible repeated VTT errors need review."
+            next_segment = new_segment.model_copy(
                 update={
-                    "text": old_segment.text,
+                    "text": projected_text,
                     "speaker": old_segment.speaker,
                     "retime_confidence": round(prefix_confidence, 3),
                     "retime_status": status,
                     "retime_note": note,
-                    "correction_suggestions": [],
+                    "correction_suggestions": correction_suggestions,
                 }
             )
             confidence_values.append(prefix_confidence)
@@ -4231,6 +4459,10 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
             job_id=job_id,
             media_metadata=media_metadata,
         )
+        aligned_segments = repair_dense_caption_timing_gaps(
+            aligned_segments,
+            source_label=detected_timing_source,
+        )
         update_job_processing_state(
             job_id,
             stage="aligned",
@@ -4241,18 +4473,8 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
         )
 
         time.sleep(0.1)
-        final_stage: JobStage = "ready"
         final_segments = aligned_segments
-        if local_segments:
-            update_job_processing_state(
-                job_id,
-                stage=final_stage,
-                transcription_mode=detected_mode,
-                transcription_source=detected_source,
-                timing_source=detected_timing_source,
-                transcript_segments=final_segments,
-            )
-        else:
+        if not local_segments:
             ready_segments = build_placeholder_segments(
                 stage="ready",
                 job_id=job_id,
@@ -4260,13 +4482,22 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
             )
             update_job_processing_state(
                 job_id,
-                stage=final_stage,
+                stage="aligned",
                 transcription_mode="placeholder",
                 transcription_source=detected_source,
                 timing_source=detected_timing_source,
                 transcript_segments=ready_segments,
             )
+            final_segments = ready_segments
         apply_pending_legacy_subtitle(job_id)
+        update_job_processing_state(
+            job_id,
+            stage="ready",
+            transcription_mode=detected_mode if local_segments else "placeholder",
+            transcription_source=detected_source,
+            timing_source=detected_timing_source,
+            transcript_segments=final_segments,
+        )
     except Exception as exc:
         logger.exception("Ingest pipeline failed for %s (%s)", job_id, media_path)
         fallback_metadata = None
