@@ -137,6 +137,7 @@ type HealthResponse = {
   status: string;
   service: string;
   timestamp: string;
+  data_dir?: string;
 };
 
 type JobStage = "queued" | "probing" | "transcribing" | "aligned" | "diarized" | "ready";
@@ -540,6 +541,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   const [selectedFileName, setSelectedFileName] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isSubmittingIngest, setIsSubmittingIngest] = useState(false);
+  const [isClearingRuntime, setIsClearingRuntime] = useState(false);
   const [softsubOutputDir, setSoftsubOutputDir] = useState("");
   const [exportBaseName, setExportBaseName] = useState("");
   const [softsubOutputName, setSoftsubOutputName] = useState("");
@@ -574,6 +576,21 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   const [scormMessageIsError, setScormMessageIsError] = useState(false);
   const mediaFileInputRef = useRef<HTMLInputElement | null>(null);
   const legacySubtitleInputRef = useRef<HTMLInputElement | null>(null);
+
+  const resetSourceSelections = () => {
+    setMediaPath("");
+    setSelectedFileName("");
+    setSelectedFile(null);
+    setLegacySubtitleFile(null);
+    setLegacySubtitleFileName("");
+    setLegacySubtitlePath("");
+    if (mediaFileInputRef.current) {
+      mediaFileInputRef.current.value = "";
+    }
+    if (legacySubtitleInputRef.current) {
+      legacySubtitleInputRef.current.value = "";
+    }
+  };
 
   const apiFetch = (input: RequestInfo | URL, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
@@ -896,12 +913,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
       } catch {
         // The polling effect will retry while the ingest worker is starting.
       }
-      setMediaPath("");
-      setSelectedFileName("");
-      setSelectedFile(null);
-      setLegacySubtitleFile(null);
-      setLegacySubtitleFileName("");
-      setLegacySubtitlePath("");
+      resetSourceSelections();
     } catch (error) {
       setIngestMessageIsError(true);
       setIngestMessage(
@@ -909,6 +921,45 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
       );
     } finally {
       setIsSubmittingIngest(false);
+    }
+  };
+
+  const onClearRuntime = async () => {
+    if (isSubmittingIngest || isClearingRuntime) {
+      return;
+    }
+    setIsClearingRuntime(true);
+    setIngestMessage("");
+    setIngestMessageIsError(false);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/runtime/clear`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+      const data = (await response.json()) as { message?: string };
+      setJobs([]);
+      setSelectedJobId(null);
+      setSelectedJobDetail(null);
+      setJobDetailError("");
+      setSegmentDrafts([]);
+      setExpandedSegmentId(null);
+      setRetimeReport(null);
+      setShowLowConfidenceOnly(false);
+      setActiveStep("load");
+      resetSourceSelections();
+      await loadJobs();
+      setIngestMessageIsError(false);
+      setIngestMessage(data.message ?? "Cleared all local jobs and uploads.");
+    } catch (error) {
+      setIngestMessageIsError(true);
+      setIngestMessage(
+        error instanceof Error ? error.message : "Failed to clear local jobs and uploads.",
+      );
+    } finally {
+      setIsClearingRuntime(false);
     }
   };
 
@@ -1692,6 +1743,20 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
             <>
           <Panel title="Bring in source media">
             <p>Choose the revised MP4 and, optionally, the legacy VTT/SRT whose text corrections should carry forward.</p>
+            <div className="clear-runtime-card">
+              <div>
+                <p className="subtitle-panel-title">Fresh start</p>
+                <p className="muted">Clear local jobs, uploads, subtitle tracks, and generated files.</p>
+              </div>
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => void onClearRuntime()}
+                disabled={isSubmittingIngest || isClearingRuntime}
+              >
+                {isClearingRuntime ? "Clearing..." : "Clear All"}
+              </button>
+            </div>
             <form className="ingest-form" onSubmit={onIngest}>
               <div className="source-upload-grid">
                 <div className="source-upload-card">
@@ -1700,7 +1765,12 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                     <button
                       type="button"
                       className="secondary-btn source-upload-button"
-                      onClick={() => mediaFileInputRef.current?.click()}
+                      onClick={() => {
+                        if (mediaFileInputRef.current) {
+                          mediaFileInputRef.current.value = "";
+                          mediaFileInputRef.current.click();
+                        }
+                      }}
                     >
                       Upload MP4
                     </button>
@@ -1737,7 +1807,12 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                     <button
                       type="button"
                       className="secondary-btn source-upload-button"
-                      onClick={() => legacySubtitleInputRef.current?.click()}
+                      onClick={() => {
+                        if (legacySubtitleInputRef.current) {
+                          legacySubtitleInputRef.current.value = "";
+                          legacySubtitleInputRef.current.click();
+                        }
+                      }}
                     >
                       Upload Old VTT
                     </button>

@@ -51,6 +51,11 @@ class IngestResponse(BaseModel):
     message: str
 
 
+class ClearRuntimeResponse(BaseModel):
+    status: Literal["cleared"]
+    message: str
+
+
 class MediaMetadata(BaseModel):
     file_name: str
     size_bytes: int = Field(..., ge=0)
@@ -369,7 +374,10 @@ jobs_lock = threading.Lock()
 ingest_worker_lock = threading.Lock()
 active_ingest_job_id: str | None = None
 scorm_lock = threading.RLock()
-DATA_DIR = Path(__file__).parent / "data"
+DEFAULT_DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(os.getenv("SRT_DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
+if not DATA_DIR.is_absolute():
+    DATA_DIR = (Path.cwd() / DATA_DIR).resolve()
 UPLOADS_DIR = DATA_DIR / "uploads"
 TRACKS_DIR = DATA_DIR / "tracks"
 ARTIFACTS_DIR = DATA_DIR / "artifacts"
@@ -417,6 +425,26 @@ def save_scorm_state() -> None:
     SCORM_DIR.mkdir(parents=True, exist_ok=True)
     with scorm_lock:
         _write_scorm_state_unlocked()
+
+
+def env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def clear_runtime_state() -> None:
+    global jobs, next_job_id, active_ingest_job_id, last_retention_cleanup_at
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for runtime_dir in (UPLOADS_DIR, TRACKS_DIR, ARTIFACTS_DIR):
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    with jobs_lock:
+        jobs = []
+        next_job_id = 1
+        active_ingest_job_id = None
+        last_retention_cleanup_at = None
+        STORE_PATH.unlink(missing_ok=True)
+        _write_state_unlocked()
 
 
 def parse_state_datetime(value: str | None) -> datetime | None:
@@ -808,6 +836,8 @@ def load_scorm_state() -> None:
 
 @app.on_event("startup")
 def on_startup() -> None:
+    if env_flag("SRT_CLEAR_RUNTIME_ON_START"):
+        clear_runtime_state()
     load_state()
     load_scorm_state()
     prune_expired_data(force=True)
@@ -820,7 +850,22 @@ def health() -> dict[str, str]:
         "status": "ok",
         "service": "subtitle-workstation-api",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data_dir": str(DATA_DIR),
     }
+
+
+@app.post("/runtime/clear", response_model=ClearRuntimeResponse)
+def clear_runtime() -> ClearRuntimeResponse:
+    if ingest_worker_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot clear all while an ingest job is running.",
+        )
+    clear_runtime_state()
+    return ClearRuntimeResponse(
+        status="cleared",
+        message="Cleared local jobs, uploads, subtitle tracks, and generated artifacts.",
+    )
 
 
 def tool_version(command: str, *args: str, timeout: int = 8) -> dict[str, Any]:
@@ -4665,7 +4710,7 @@ async def ingest_upload(
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
     global next_job_id
-    upload_stem = f"upload-{next_job_id:03d}"
+    upload_stem = f"upload-{int(time.time() * 1000)}-{next_job_id:03d}"
     stored_path = UPLOADS_DIR / f"{upload_stem}{suffix}"
 
     await store_upload_file(upload=file, destination=stored_path)

@@ -317,6 +317,25 @@ button:disabled {
   gap: 12px;
 }
 
+.clear-runtime-card {
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.64);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.clear-runtime-card p {
+  margin: 0;
+}
+
+.clear-runtime-card .muted {
+  margin-top: 4px;
+}
+
 .source-upload-card {
   min-height: 150px;
   border: 1px solid #334155;

@@ -7,6 +7,8 @@ FRONTEND_DIR="$ROOT_DIR/frontend"
 RUN_DIR="$ROOT_DIR/.run"
 BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
+RUNTIME_DATA_DIR="${SRT_DATA_DIR:-$RUN_DIR/data}"
+CLEAR_RUNTIME_ON_START="${SRT_CLEAR_RUNTIME_ON_START:-1}"
 PYTHON_BIN="${PYTHON_BIN:-python3.13}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
@@ -88,11 +90,14 @@ echo "Starting Subtitle Workstation"
 echo "- Backend bind:  http://$APP_HOST:$BACKEND_PORT"
 echo "- Frontend bind: http://$APP_HOST:$FRONTEND_PORT"
 echo "- Local API docs: http://127.0.0.1:$BACKEND_PORT/docs"
+echo "- Runtime data: $RUNTIME_DATA_DIR"
 echo
 
 (
   cd "$BACKEND_DIR"
   source .venv/bin/activate
+  export SRT_DATA_DIR="$RUNTIME_DATA_DIR"
+  export SRT_CLEAR_RUNTIME_ON_START="$CLEAR_RUNTIME_ON_START"
   exec uvicorn app.main:app --host "$APP_HOST" --port "$BACKEND_PORT"
 ) >"$RUN_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
