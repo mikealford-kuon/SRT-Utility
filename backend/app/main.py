@@ -4528,6 +4528,56 @@ def run_ingest_pipeline(job_id: str, media_path: Path) -> None:
             active_ingest_job_id = None
 
 
+def run_local_transcription_with_timeout(
+    *,
+    media_path: Path,
+    job_id: str,
+    media_metadata: MediaMetadata | None,
+    timeout_seconds: int,
+) -> tuple[
+    list[TranscriptSegment] | None,
+    str,
+    str,
+    str,
+]:
+    result: dict[str, tuple[list[TranscriptSegment] | None, str, str, str] | BaseException] = {}
+
+    def _worker() -> None:
+        try:
+            result["value"] = try_local_cli_transcription(
+                media_path=media_path,
+                job_id=job_id,
+                media_metadata=media_metadata,
+            )
+        except BaseException as exc:  # pragma: no cover - worker hardening
+            result["error"] = exc
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+    worker.join(timeout=timeout_seconds)
+    if worker.is_alive():
+        timeout_source = (
+            f"placeholder-fallback:transcribe-timeout:{timeout_seconds}s"
+        )
+        return (
+            None,
+            "placeholder",
+            timeout_source,
+            timeout_source,
+        )
+    if "error" in result and isinstance(result["error"], BaseException):
+        raise result["error"]
+    value = result.get("value")
+    if not isinstance(value, tuple):
+        return (
+            None,
+            "placeholder",
+            "placeholder-fallback:transcribe-worker-error",
+            "placeholder-fallback:transcribe-worker-error",
+        )
+    return value
+
+
 def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
     try:
         update_job_processing_state(job_id, stage="probing")
@@ -4547,10 +4597,11 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
 
         time.sleep(0.15)
         update_job_processing_state(job_id, stage="transcribing")
-        local_segments, detected_mode, detected_source, detected_timing_source = try_local_cli_transcription(
+        local_segments, detected_mode, detected_source, detected_timing_source = run_local_transcription_with_timeout(
             media_path=media_path,
             job_id=job_id,
             media_metadata=media_metadata,
+            timeout_seconds=STALLED_TRANSCRIPTION_FALLBACK_SECONDS,
         )
 
         time.sleep(0.15)
