@@ -85,6 +85,73 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         self.assertEqual(report.matched_segments, 2)
         self.assertEqual(report.unmatched_new_segments, 1)
 
+    def test_legacy_dialog_question_answer_gets_newline_inside_same_timing(self) -> None:
+        old_segments = [
+            segment(
+                "old-1",
+                0.0,
+                8.0,
+                "How do you open a work package? I meet with Amy and the program team.",
+            ),
+        ]
+        new_segments = [
+            segment(
+                "new-1",
+                20.0,
+                28.0,
+                "How do you open a work package I meet with Amy and the program team",
+            ),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(
+            retimed[0].text,
+            "How do you open a work package?\nI meet with Amy and the program team.",
+        )
+        self.assertEqual(retimed[0].start_seconds, 20.0)
+        self.assertEqual(report.matched_segments, 1)
+
+    def test_legacy_dialog_sentence_runon_gets_punctuation_newline(self) -> None:
+        old_segments = [
+            segment(
+                "old-1",
+                0.0,
+                8.0,
+                "Yes, and no. The hours will match exactly.",
+            ),
+        ]
+        new_segments = [
+            segment(
+                "new-1",
+                30.0,
+                38.0,
+                "Yes and no the hours will match exactly",
+            ),
+        ]
+
+        retimed, _ = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(retimed[0].text, "Yes, and no.\nThe hours will match exactly.")
+
+    def test_dialog_line_break_cleanup_does_not_split_common_titles(self) -> None:
+        self.assertEqual(
+            app_main.normalize_dialog_turn_line_breaks("Mr. Smith answers. Amy continues."),
+            "Mr. Smith answers.\nAmy continues.",
+        )
+
     def test_changed_mp4_insert_delete_shape_wins_inside_matched_segment(self) -> None:
         old_segments = [
             segment(
@@ -113,7 +180,7 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
 
         self.assertEqual(
             retimed[0].text,
-            "Welcome to the EVMS course. This new MP4 sentence was inserted",
+            "Welcome to the EVMS course.\nThis new MP4 sentence was inserted",
         )
         self.assertEqual(retimed[0].start_seconds, 20.0)
         self.assertEqual(retimed[0].end_seconds, 23.5)
@@ -1395,6 +1462,44 @@ class OperationalReadinessTests(unittest.TestCase):
         self.assertEqual(detail.transcript_segments[0].start_seconds, 5.832)
         self.assertIn("leading-silence-clamped", detail.timing_source)
         self.assertIn("leading-silence-clamped", app_main.jobs[0].timing_source)
+
+    def test_ready_job_detail_repairs_dialog_turn_line_breaks(self) -> None:
+        media_path = Path(self.temp_dir.name) / "lesson.mp4"
+        media_path.write_bytes(b"not-real-video")
+        now = datetime.now(timezone.utc).isoformat()
+        app_main.jobs[:] = [
+            JobDetail(
+                job_id="job-dialog-turns",
+                kind="ingest",
+                media_path=str(media_path),
+                transcription_mode="real-cli",
+                transcription_source="retimed-edits:vtt",
+                timing_source="plain-whisper-cli-srt|retimed-edits:vtt",
+                stage="ready",
+                progress_percent=100,
+                stage_label="Ready",
+                stage_description="Processing complete.",
+                created_at=now,
+                updated_at=now,
+                transcript_segments=[
+                    segment(
+                        "job-dialog-turns-seg-001",
+                        10.0,
+                        16.0,
+                        "How do you open a work package? I meet with Amy.",
+                    ),
+                ],
+            )
+        ]
+
+        detail = app_main.get_job("job-dialog-turns")
+
+        self.assertEqual(
+            detail.transcript_segments[0].text,
+            "How do you open a work package?\nI meet with Amy.",
+        )
+        self.assertIn("dialog-turn-lines-normalized", detail.timing_source)
+        self.assertIn("dialog-turn-lines-normalized", app_main.jobs[0].timing_source)
 
     def test_manual_advance_cannot_turn_placeholder_transcript_into_ready_output(self) -> None:
         media_path = Path(self.temp_dir.name) / "lesson.mp4"

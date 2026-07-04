@@ -2247,6 +2247,53 @@ def parse_subtitle_text_to_segments(
     return segments
 
 
+def normalize_dialog_turn_line_breaks(text: str) -> str:
+    """Preserve obvious speaker turns inside one subtitle cue.
+
+    The app does not have diarization speaker labels in the local Whisper path.
+    The safest deterministic signal is subtitle text itself: when one cue has
+    sentence-ending punctuation followed by another sentence, show the next
+    sentence on a new line while keeping the same cue timing.
+    """
+    stripped_text = text.strip()
+    if not stripped_text:
+        return text
+
+    source_lines = stripped_text.splitlines() if "\n" in stripped_text else [stripped_text]
+    normalized_lines: list[str] = []
+    sentence_boundary = re.compile(
+        r"(?<!\bMr)(?<!\bMrs)(?<!\bMs)(?<!\bDr)(?<!\bProf)(?<!\bSt)"
+        r"(?<!\be\.g)(?<!\bi\.e)"
+        r"([.!?])\s+(?=([\"'“‘(]*[A-Z0-9]))"
+    )
+
+    for source_line in source_lines:
+        compact_line = re.sub(r"\s+", " ", source_line).strip()
+        if not compact_line:
+            continue
+        split_line = sentence_boundary.sub(r"\1\n", compact_line)
+        normalized_lines.extend(
+            line.strip()
+            for line in split_line.splitlines()
+            if line.strip()
+        )
+
+    return "\n".join(normalized_lines)
+
+
+def normalize_legacy_dialog_turns(
+    segments: list[TranscriptSegment],
+) -> list[TranscriptSegment]:
+    normalized_segments: list[TranscriptSegment] = []
+    for segment in segments:
+        normalized_text = normalize_dialog_turn_line_breaks(segment.text)
+        if normalized_text == segment.text:
+            normalized_segments.append(segment)
+            continue
+        normalized_segments.append(segment.model_copy(update={"text": normalized_text}))
+    return normalized_segments
+
+
 def detect_leading_audio_silence_end(
     *,
     audio_path: Path,
@@ -2650,15 +2697,18 @@ def project_edited_text_to_current_structure(*, edited_text: str, current_text: 
     punctuation, and spelling win. Old VTT-only words are intentionally
     skipped, and current MP4-only words are intentionally inserted.
     """
+    edited_text = normalize_dialog_turn_line_breaks(edited_text)
     edited_spans = subtitle_token_spans(edited_text)
     current_spans = subtitle_token_spans(current_text)
     if not edited_spans or not current_spans:
-        return edited_text if normalize_subtitle_match_text(edited_text) == normalize_subtitle_match_text(current_text) else current_text
+        if normalize_subtitle_match_text(edited_text) == normalize_subtitle_match_text(current_text):
+            return normalize_dialog_turn_line_breaks(edited_text)
+        return normalize_dialog_turn_line_breaks(current_text)
 
     edited_tokens = [token for token, _, _ in edited_spans]
     current_tokens = [token for token, _, _ in current_spans]
     if edited_tokens == current_tokens:
-        return edited_text.strip()
+        return normalize_dialog_turn_line_breaks(edited_text)
 
     current_subsequence_start = find_token_subsequence(
         edited_tokens,
@@ -2672,7 +2722,7 @@ def project_edited_text_to_current_structure(*, edited_text: str, current_text: 
             start_index=current_subsequence_start,
             end_index=current_subsequence_start + len(current_tokens) - 1,
         )
-        return projected or current_text.strip()
+        return normalize_dialog_turn_line_breaks(projected or current_text.strip())
 
     pieces: list[str] = []
     matcher = SequenceMatcher(None, edited_tokens, current_tokens)
@@ -2735,7 +2785,7 @@ def project_edited_text_to_current_structure(*, edited_text: str, current_text: 
             pieces.append(current_block_text)
 
     projected_text = join_projected_subtitle_pieces(pieces)
-    return projected_text or current_text.strip()
+    return normalize_dialog_turn_line_breaks(projected_text or current_text.strip())
 
 
 def collapse_short_trailing_split_chunks(
@@ -3366,6 +3416,7 @@ def retime_edited_subtitle_segments(
     if not new_timing_segments:
         raise HTTPException(status_code=400, detail="Current job has no timing segments to retime against.")
 
+    old_segments = normalize_legacy_dialog_turns(old_segments)
     matched_old_indexes: set[int] = set()
     segment_reports: list[RetimedSegmentReport] = []
     retimed_segments: list[TranscriptSegment] = []
@@ -4725,6 +4776,30 @@ def repair_ready_job_leading_silence_timing(job: JobDetail) -> tuple[JobDetail, 
     )
 
 
+def repair_ready_job_dialog_turn_lines(job: JobDetail) -> tuple[JobDetail, bool]:
+    if (
+        job.stage != "ready"
+        or not job.transcript_segments
+        or "dialog-turn-lines-normalized" in job.timing_source
+    ):
+        return job, False
+
+    normalized_segments = normalize_legacy_dialog_turns(job.transcript_segments)
+    if normalized_segments == job.transcript_segments:
+        return job, False
+
+    return (
+        job.model_copy(
+            update={
+                "transcript_segments": normalized_segments,
+                "timing_source": f"{job.timing_source}|dialog-turn-lines-normalized",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ),
+        True,
+    )
+
+
 def run_ingest_pipeline(job_id: str, media_path: Path) -> None:
     global active_ingest_job_id
     with ingest_worker_lock:
@@ -5057,7 +5132,8 @@ def get_job(job_id: str) -> JobDetail:
     for index, job in enumerate(jobs):
         if job.job_id == job_id:
             job, did_repair_leading_silence = repair_ready_job_leading_silence_timing(job)
-            if did_repair_leading_silence:
+            job, did_repair_dialog_turns = repair_ready_job_dialog_turn_lines(job)
+            if did_repair_leading_silence or did_repair_dialog_turns:
                 jobs[index] = job
                 save_state()
             if job.stage == "ready":
