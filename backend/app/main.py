@@ -64,7 +64,7 @@ class MediaMetadata(BaseModel):
     has_audio: bool | None = None
 
 
-JobStage = Literal["queued", "probing", "transcribing", "aligned", "diarized", "ready"]
+JobStage = Literal["queued", "probing", "transcribing", "aligned", "diarized", "ready", "failed"]
 
 STAGE_ORDER: tuple[JobStage, ...] = (
     "queued",
@@ -82,6 +82,7 @@ STAGE_PROGRESS: dict[JobStage, int] = {
     "aligned": 75,
     "diarized": 90,
     "ready": 100,
+    "failed": 100,
 }
 
 STAGE_LABELS: dict[JobStage, str] = {
@@ -91,6 +92,7 @@ STAGE_LABELS: dict[JobStage, str] = {
     "aligned": "Aligned",
     "diarized": "Speaker tagging",
     "ready": "Ready",
+    "failed": "Transcription failed",
 }
 
 STAGE_DESCRIPTIONS: dict[JobStage, str] = {
@@ -100,6 +102,7 @@ STAGE_DESCRIPTIONS: dict[JobStage, str] = {
     "aligned": "Refining subtitle timing and building editable segments.",
     "diarized": "Applying speaker labels when available.",
     "ready": "Processing complete. Review and export are ready.",
+    "failed": "Processing stopped before editable MP4 timings were produced.",
 }
 
 
@@ -474,26 +477,14 @@ def recover_stale_ingest_jobs() -> None:
             )
             jobs[index] = job.model_copy(
                 update={
-                    "stage": "ready",
-                    "progress_percent": STAGE_PROGRESS["ready"],
-                    "stage_label": STAGE_LABELS["ready"],
-                    "stage_description": STAGE_DESCRIPTIONS["ready"],
-                    "transcription_mode": (
-                        job.transcription_mode
-                        if job.transcript_is_edited and job.transcript_segments
-                        else "placeholder"
-                    ),
+                    "stage": "failed",
+                    "progress_percent": STAGE_PROGRESS["failed"],
+                    "stage_label": STAGE_LABELS["failed"],
+                    "stage_description": STAGE_DESCRIPTIONS["failed"],
+                    "transcription_mode": "placeholder",
                     "transcription_source": fallback_source,
                     "timing_source": fallback_source,
-                    "transcript_segments": (
-                        job.transcript_segments
-                        if job.transcript_is_edited and job.transcript_segments
-                        else build_placeholder_segments(
-                            stage="ready",
-                            job_id=job.job_id,
-                            media_metadata=job.media_metadata,
-                        )
-                    ),
+                    "transcript_segments": [],
                     "updated_at": now.isoformat(),
                 }
             )
@@ -835,7 +826,7 @@ def load_state() -> None:
         did_backfill_segments = False
         for index, job in enumerate(jobs):
             next_job = job
-            if not next_job.transcript_segments:
+            if not next_job.transcript_segments and next_job.stage != "failed":
                 next_job = next_job.model_copy(
                     update={
                         "transcript_segments": build_placeholder_segments(
@@ -1305,6 +1296,7 @@ def build_placeholder_segments(
         "aligned": "Aligned subtitle draft",
         "diarized": "Speaker-tagged subtitle draft",
         "ready": "Ready-to-export subtitle line",
+        "failed": "Failed transcription placeholder",
     }[stage]
     include_speaker = stage in {"diarized", "ready"}
 
@@ -4247,11 +4239,15 @@ def run_whisperx_transcription(
     whisperx_model = os.getenv("LOCAL_WHISPERX_MODEL", os.getenv("LOCAL_WHISPER_MODEL", "tiny"))
     whisperx_device = os.getenv("LOCAL_WHISPERX_DEVICE", "cpu")
     whisperx_compute_type = os.getenv("LOCAL_WHISPERX_COMPUTE_TYPE", "int8")
-    whisperx_timeout_raw = os.getenv("LOCAL_WHISPERX_TIMEOUT_SECONDS", "1800")
+    max_transcription_step_seconds = max(30, STALLED_TRANSCRIPTION_FALLBACK_SECONDS - 5)
+    whisperx_timeout_raw = os.getenv("LOCAL_WHISPERX_TIMEOUT_SECONDS", str(max_transcription_step_seconds))
     try:
-        whisperx_timeout_seconds = max(60, int(whisperx_timeout_raw))
+        whisperx_timeout_seconds = min(
+            max(30, int(whisperx_timeout_raw)),
+            max_transcription_step_seconds,
+        )
     except ValueError:
-        whisperx_timeout_seconds = 1800
+        whisperx_timeout_seconds = max_transcription_step_seconds
 
     cli_command = [
         *whisperx_command_prefix,
@@ -4356,7 +4352,7 @@ def try_local_cli_transcription(
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=min(120, max(30, STALLED_TRANSCRIPTION_FALLBACK_SECONDS - 5)),
             )
         except (subprocess.TimeoutExpired, OSError):
             return (
@@ -4389,6 +4385,13 @@ def try_local_cli_transcription(
                     "real-cli:whisperx-aligned",
                 )
             whisperx_failure_reason = whisperx_error or "whisperx-error"
+            if whisperx_failure_reason == "whisperx-run-timeout":
+                return (
+                    None,
+                    "placeholder",
+                    "placeholder-fallback:whisperx-timeout",
+                    f"placeholder-fallback:whisperx-timeout|{whisperx_status}",
+                )
 
         if whisper_cli_name == "whisper" and whisper_cli_command_prefix is not None:
             cli_command = [
@@ -4409,7 +4412,7 @@ def try_local_cli_transcription(
                     check=False,
                     capture_output=True,
                     text=True,
-                    timeout=600,
+                    timeout=max(30, STALLED_TRANSCRIPTION_FALLBACK_SECONDS - 5),
                 )
             except (subprocess.TimeoutExpired, OSError):
                 return (
@@ -4508,7 +4511,9 @@ def update_job_processing_state(
                     "transcript_segments": (
                         job.transcript_segments
                         if preserve_edited_transcript
-                        else transcript_segments or job.transcript_segments
+                        else transcript_segments
+                        if transcript_segments is not None
+                        else job.transcript_segments
                     ),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
@@ -4603,13 +4608,19 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
             media_metadata=media_metadata,
             timeout_seconds=STALLED_TRANSCRIPTION_FALLBACK_SECONDS,
         )
+        if not local_segments:
+            update_job_processing_state(
+                job_id,
+                stage="failed",
+                transcription_mode="placeholder",
+                transcription_source=detected_source,
+                timing_source=detected_timing_source,
+                transcript_segments=[],
+            )
+            return
 
         time.sleep(0.15)
-        aligned_segments = local_segments or build_placeholder_segments(
-            stage="aligned",
-            job_id=job_id,
-            media_metadata=media_metadata,
-        )
+        aligned_segments = local_segments
         aligned_segments = repair_dense_caption_timing_gaps(
             aligned_segments,
             source_label=detected_timing_source,
@@ -4617,7 +4628,7 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
         update_job_processing_state(
             job_id,
             stage="aligned",
-            transcription_mode=detected_mode if local_segments else "placeholder",
+            transcription_mode=detected_mode,
             transcription_source=detected_source,
             timing_source=detected_timing_source,
             transcript_segments=aligned_segments,
@@ -4625,48 +4636,24 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
 
         time.sleep(0.1)
         final_segments = aligned_segments
-        if not local_segments:
-            ready_segments = build_placeholder_segments(
-                stage="ready",
-                job_id=job_id,
-                media_metadata=media_metadata,
-            )
-            update_job_processing_state(
-                job_id,
-                stage="aligned",
-                transcription_mode="placeholder",
-                transcription_source=detected_source,
-                timing_source=detected_timing_source,
-                transcript_segments=ready_segments,
-            )
-            final_segments = ready_segments
         apply_pending_legacy_subtitle(job_id)
         update_job_processing_state(
             job_id,
             stage="ready",
-            transcription_mode=detected_mode if local_segments else "placeholder",
+            transcription_mode=detected_mode,
             transcription_source=detected_source,
             timing_source=detected_timing_source,
             transcript_segments=final_segments,
         )
     except Exception as exc:
         logger.exception("Ingest pipeline failed for %s (%s)", job_id, media_path)
-        fallback_metadata = None
-        try:
-            fallback_metadata = build_media_metadata(media_path)
-        except Exception:
-            fallback_metadata = None
         update_job_processing_state(
             job_id,
-            stage="ready",
+            stage="failed",
             transcription_mode="placeholder",
             transcription_source=f"placeholder-fallback:pipeline-error:{type(exc).__name__}",
             timing_source=f"placeholder-fallback:pipeline-error:{type(exc).__name__}",
-            transcript_segments=build_placeholder_segments(
-                stage="ready",
-                job_id=job_id,
-                media_metadata=fallback_metadata,
-            ),
+            transcript_segments=[],
         )
 
 
@@ -5458,8 +5445,27 @@ def advance_job(job_id: str) -> JobSummary:
     for index, job in enumerate(jobs):
         if job.job_id != job_id:
             continue
+        if job.stage == "failed":
+            return summarize_job(job)
         current_stage_index = STAGE_ORDER.index(job.stage)
         next_stage = STAGE_ORDER[min(current_stage_index + 1, len(STAGE_ORDER) - 1)]
+        advancing_placeholder_to_ready = (
+            next_stage == "ready"
+            and job.transcription_mode == "placeholder"
+            and not job.transcript_is_edited
+        )
+        if advancing_placeholder_to_ready:
+            next_stage = "failed"
+        if advancing_placeholder_to_ready:
+            next_segments: list[TranscriptSegment] = []
+        elif job.transcription_mode == "placeholder" and not job.transcript_is_edited:
+            next_segments = build_placeholder_segments(
+                stage=next_stage,
+                job_id=job.job_id,
+                media_metadata=job.media_metadata,
+            )
+        else:
+            next_segments = job.transcript_segments
         updated_job = job.model_copy(
             update={
                 "stage": next_stage,
@@ -5467,16 +5473,7 @@ def advance_job(job_id: str) -> JobSummary:
                 "stage_label": STAGE_LABELS[next_stage],
                 "stage_description": STAGE_DESCRIPTIONS[next_stage],
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-                "transcript_segments": (
-                    build_placeholder_segments(
-                        stage=next_stage,
-                        job_id=job.job_id,
-                        media_metadata=job.media_metadata,
-                    )
-                    if job.transcription_mode == "placeholder"
-                    and not job.transcript_is_edited
-                    else job.transcript_segments
-                ),
+                "transcript_segments": next_segments,
             }
         )
         jobs[index] = updated_job

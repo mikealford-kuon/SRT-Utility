@@ -1111,6 +1111,58 @@ class RetimeEditedSubtitleEndpointTests(unittest.TestCase):
 
 
 class OperationalReadinessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.original_jobs = list(app_main.jobs)
+        self.original_data_dir = app_main.DATA_DIR
+        self.original_uploads_dir = app_main.UPLOADS_DIR
+        self.original_tracks_dir = app_main.TRACKS_DIR
+        self.original_artifacts_dir = app_main.ARTIFACTS_DIR
+        self.original_store_path = app_main.STORE_PATH
+        self.original_next_job_id = app_main.next_job_id
+        app_main.DATA_DIR = Path(self.temp_dir.name)
+        app_main.UPLOADS_DIR = app_main.DATA_DIR / "uploads"
+        app_main.TRACKS_DIR = app_main.DATA_DIR / "tracks"
+        app_main.ARTIFACTS_DIR = app_main.DATA_DIR / "artifacts"
+        app_main.STORE_PATH = app_main.DATA_DIR / "jobs.json"
+        app_main.jobs[:] = []
+        app_main.next_job_id = 1
+
+    def tearDown(self) -> None:
+        app_main.jobs[:] = self.original_jobs
+        app_main.DATA_DIR = self.original_data_dir
+        app_main.UPLOADS_DIR = self.original_uploads_dir
+        app_main.TRACKS_DIR = self.original_tracks_dir
+        app_main.ARTIFACTS_DIR = self.original_artifacts_dir
+        app_main.STORE_PATH = self.original_store_path
+        app_main.next_job_id = self.original_next_job_id
+        self.temp_dir.cleanup()
+
+    def add_queued_ingest_job(self, job_id: str, media_path: Path) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        app_main.jobs.append(
+            JobDetail(
+                job_id=job_id,
+                kind="ingest",
+                media_path=str(media_path),
+                media_metadata=None,
+                transcription_mode="placeholder",
+                transcription_source="queued-awaiting-processing",
+                timing_source="queued-awaiting-processing",
+                stage="queued",
+                progress_percent=app_main.STAGE_PROGRESS["queued"],
+                stage_label=app_main.STAGE_LABELS["queued"],
+                stage_description=app_main.STAGE_DESCRIPTIONS["queued"],
+                created_at=now,
+                updated_at=now,
+                transcript_segments=app_main.build_placeholder_segments(
+                    stage="queued",
+                    job_id=job_id,
+                    media_metadata=None,
+                ),
+            )
+        )
+
     def test_diagnostics_reports_core_runtime_without_secrets(self) -> None:
         payload = app_main.diagnostics()
 
@@ -1152,6 +1204,76 @@ class OperationalReadinessTests(unittest.TestCase):
             app_main.active_ingest_job_id = original_active_job_id
 
         self.assertEqual(calls, ["start:job-one", "end:job-one", "start:job-two", "end:job-two"])
+
+    def test_ingest_without_real_transcript_fails_without_ready_placeholders(self) -> None:
+        media_path = Path(self.temp_dir.name) / "lesson.mp4"
+        media_path.write_bytes(b"not-real-video")
+        self.add_queued_ingest_job("job-no-transcript", media_path)
+        original_build_media_metadata = app_main.build_media_metadata
+        original_transcribe = app_main.run_local_transcription_with_timeout
+
+        def fake_build_media_metadata(path: Path) -> app_main.MediaMetadata:
+            return app_main.MediaMetadata(
+                file_name=path.name,
+                size_bytes=path.stat().st_size,
+                duration_seconds=71.62,
+                has_video=True,
+                has_audio=True,
+            )
+
+        def fake_transcribe(**_: object) -> tuple[list[TranscriptSegment] | None, str, str, str]:
+            return (
+                None,
+                "placeholder",
+                "placeholder-fallback:transcriber-no-output",
+                "placeholder-fallback:transcriber-no-output",
+            )
+
+        try:
+            app_main.build_media_metadata = fake_build_media_metadata
+            app_main.run_local_transcription_with_timeout = fake_transcribe
+            app_main.run_ingest_pipeline_unlocked("job-no-transcript", media_path)
+        finally:
+            app_main.build_media_metadata = original_build_media_metadata
+            app_main.run_local_transcription_with_timeout = original_transcribe
+
+        job = app_main.jobs[0]
+        self.assertEqual(job.stage, "failed")
+        self.assertEqual(job.progress_percent, app_main.STAGE_PROGRESS["failed"])
+        self.assertEqual(job.transcript_segments, [])
+        self.assertIn("transcriber-no-output", job.transcription_source)
+
+    def test_ingest_pipeline_exception_fails_without_ready_placeholders(self) -> None:
+        media_path = Path(self.temp_dir.name) / "lesson.mp4"
+        media_path.write_bytes(b"not-real-video")
+        self.add_queued_ingest_job("job-exception", media_path)
+        original_build_media_metadata = app_main.build_media_metadata
+
+        def fake_build_media_metadata(_: Path) -> app_main.MediaMetadata:
+            raise RuntimeError("probe failed")
+
+        try:
+            app_main.build_media_metadata = fake_build_media_metadata
+            app_main.run_ingest_pipeline_unlocked("job-exception", media_path)
+        finally:
+            app_main.build_media_metadata = original_build_media_metadata
+
+        job = app_main.jobs[0]
+        self.assertEqual(job.stage, "failed")
+        self.assertEqual(job.transcript_segments, [])
+        self.assertIn("pipeline-error:RuntimeError", job.transcription_source)
+
+    def test_manual_advance_cannot_turn_placeholder_transcript_into_ready_output(self) -> None:
+        media_path = Path(self.temp_dir.name) / "lesson.mp4"
+        media_path.write_bytes(b"not-real-video")
+        self.add_queued_ingest_job("job-manual-advance", media_path)
+
+        for _ in range(6):
+            app_main.advance_job("job-manual-advance")
+
+        job = app_main.jobs[0]
+        self.assertEqual(job.stage, "failed")
+        self.assertEqual(job.transcript_segments, [])
 
 
 if __name__ == "__main__":

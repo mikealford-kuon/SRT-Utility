@@ -140,7 +140,7 @@ type HealthResponse = {
   data_dir?: string;
 };
 
-type JobStage = "queued" | "probing" | "transcribing" | "aligned" | "diarized" | "ready";
+type JobStage = "queued" | "probing" | "transcribing" | "aligned" | "diarized" | "ready" | "failed";
 
 type MediaMetadata = {
   file_name: string;
@@ -160,6 +160,8 @@ type JobSummary = {
   timing_source: string;
   stage: JobStage;
   progress_percent: number;
+  stage_label?: string;
+  stage_description?: string;
   created_at: string;
   updated_at: string;
 };
@@ -731,6 +733,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   const editorJob = selectedJobDetailForSelectedJob ?? selectedJob;
   const editorJobIsReady =
     hasSelectedJobDetail && selectedJobDetailForSelectedJob.stage === "ready";
+  const editorJobHasFailed = editorJob?.stage === "failed";
 
   useEffect(() => {
     setSelectedJobDetail(null);
@@ -1719,7 +1722,15 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
         </aside>
         <section className="workflow-main">
           {activeProcessingJob ? (
-            <div className={`processing-status-card ${activeProcessingJob.stage === "ready" ? "done" : "active"}`}>
+            <div
+              className={`processing-status-card ${
+                activeProcessingJob.stage === "ready"
+                  ? "done"
+                  : activeProcessingJob.stage === "failed"
+                    ? "failed"
+                    : "active"
+              }`}
+            >
               <div className="processing-status-header">
                 <div>
                   <p className="processing-status-kicker">Live progress</p>
@@ -1739,7 +1750,9 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
                       ? "Aligning subtitles to timing…"
                       : activeProcessingJob.stage === "diarized"
                         ? "Finalizing speaker and subtitle structure…"
-                        : `Stage: ${activeProcessingJob.stage}`}
+                        : activeProcessingJob.stage === "failed"
+                          ? activeProcessingJob.stage_description ?? "Transcription failed before editable timings were produced."
+                          : `Stage: ${activeProcessingJob.stage}`}
               </p>
             </div>
           ) : null}
@@ -1969,7 +1982,15 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
               ) : (
                 <p className="muted">No loaded video selected yet. Start in Load Assets, then return here to edit subtitles.</p>
               )}
-              {editorJob && !editorJobIsReady ? (
+              {editorJob && editorJobHasFailed ? (
+                <div className="asset-summary-card">
+                  <p className="subtitle-panel-title">Transcription failed</p>
+                  <p className="muted">
+                    {editorJob.stage_description ?? "The editor did not receive real MP4 timing segments for this job."}
+                  </p>
+                  <p className="muted">Source: {editorJob.transcription_source}</p>
+                </div>
+              ) : editorJob && !editorJobIsReady ? (
                 <div className="asset-summary-card">
                   <p className="subtitle-panel-title">Transcription still in progress</p>
                   <p className="muted">

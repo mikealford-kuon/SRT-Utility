@@ -599,6 +599,11 @@ button:disabled {
   border-color: #c026d3;
 }
 
+.stage-failed {
+  background: #451a1a;
+  border-color: #dc2626;
+}
+
 .job-media-path {
   display: none;
 }
@@ -695,6 +700,11 @@ button:disabled {
 
 .processing-status-card.done {
   border-color: #16a34a;
+}
+
+.processing-status-card.failed {
+  border-color: #dc2626;
+  box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.25);
 }
 
 .processing-status-header {
