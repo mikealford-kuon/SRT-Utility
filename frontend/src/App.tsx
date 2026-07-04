@@ -727,8 +727,10 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   );
   const selectedJobDetailForSelectedJob =
     selectedJobDetail?.job_id === selectedJobId ? selectedJobDetail : null;
+  const hasSelectedJobDetail = selectedJobDetailForSelectedJob !== null;
   const editorJob = selectedJobDetailForSelectedJob ?? selectedJob;
-  const editorJobIsReady = editorJob?.stage === "ready";
+  const editorJobIsReady =
+    hasSelectedJobDetail && selectedJobDetailForSelectedJob.stage === "ready";
 
   useEffect(() => {
     setSelectedJobDetail(null);
