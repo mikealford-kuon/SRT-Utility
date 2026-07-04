@@ -391,7 +391,7 @@ DATA_RETENTION_MAX_AGE = timedelta(hours=24)
 DATA_RETENTION_SWEEP_INTERVAL = timedelta(minutes=15)
 UPLOAD_MAX_BYTES = int(os.getenv("SRT_UPLOAD_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
 STALLED_TRANSCRIPTION_FALLBACK_SECONDS = int(
-    os.getenv("INGEST_TRANSCRIPTION_STALL_SECONDS", "300")
+    os.getenv("INGEST_TRANSCRIPTION_STALL_SECONDS", "120")
 )
 last_retention_cleanup_at: datetime | None = None
 scorm_packages: list[ScormPackageDetail] = []
