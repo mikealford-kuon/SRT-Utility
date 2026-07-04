@@ -373,7 +373,7 @@ class ScormRuntimeResponse(BaseModel):
 
 jobs: list[JobDetail] = []
 next_job_id = 1
-jobs_lock = threading.Lock()
+jobs_lock = threading.RLock()
 ingest_worker_lock = threading.Lock()
 active_ingest_job_id: str | None = None
 scorm_lock = threading.RLock()
@@ -2245,6 +2245,82 @@ def parse_subtitle_text_to_segments(
             detail=f"No valid subtitle segments found in {format_name.upper()} file.",
         )
     return segments
+
+
+def detect_leading_audio_silence_end(
+    *,
+    audio_path: Path,
+    ffmpeg_binary: str,
+    scan_seconds: float = 45.0,
+    noise_floor: str = "-35dB",
+    minimum_silence_seconds: float = 0.35,
+) -> float | None:
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg_binary,
+                "-hide_banner",
+                "-nostats",
+                "-i",
+                str(audio_path),
+                "-vn",
+                "-t",
+                str(scan_seconds),
+                "-af",
+                f"silencedetect=noise={noise_floor}:d={minimum_silence_seconds}",
+                "-f",
+                "null",
+                "-",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+    output = f"{result.stdout}\n{result.stderr}"
+    if not re.search(r"silence_start:\s*0(?:\.0+)?(?:\s|$)", output):
+        return None
+    match = re.search(r"silence_end:\s*([0-9]+(?:\.[0-9]+)?)", output)
+    if not match:
+        return None
+    try:
+        silence_end = float(match.group(1))
+    except ValueError:
+        return None
+    return round(max(0.0, silence_end), 3)
+
+
+def clamp_first_segment_to_detected_speech(
+    segments: list[TranscriptSegment],
+    leading_silence_end: float | None,
+) -> tuple[list[TranscriptSegment], bool]:
+    if not segments or leading_silence_end is None or leading_silence_end < 0.75:
+        return segments, False
+
+    first_segment = segments[0]
+    if first_segment.start_seconds > 0.25:
+        return segments, False
+
+    adjusted_start = round(leading_silence_end, 3)
+    if adjusted_start >= first_segment.end_seconds - 0.2:
+        return segments, False
+
+    note = "First cue start adjusted to detected speech after leading silence."
+    if first_segment.retime_note:
+        note = f"{first_segment.retime_note} {note}"
+
+    return [
+        first_segment.model_copy(
+            update={
+                "start_seconds": adjusted_start,
+                "retime_note": note,
+            }
+        ),
+        *segments[1:],
+    ], True
 
 
 def normalize_subtitle_match_text(value: str) -> str:
@@ -4408,6 +4484,10 @@ def try_local_cli_transcription(
                 f"placeholder-fallback:ffmpeg-extract-failed|{whisperx_status}",
             )
 
+        leading_silence_end = detect_leading_audio_silence_end(
+            audio_path=audio_path,
+            ffmpeg_binary=ffmpeg_binary,
+        )
         whisperx_failure_reason: str | None = None
         prefer_whisperx = os.getenv("LOCAL_TRANSCRIPTION_ENGINE", "whisper").strip().lower() == "whisperx"
         if prefer_whisperx and whisperx_command_prefix:
@@ -4419,11 +4499,16 @@ def try_local_cli_transcription(
                 timeout_seconds=timeout_seconds,
             )
             if whisperx_segments:
+                whisperx_segments, did_clamp_first_segment = clamp_first_segment_to_detected_speech(
+                    whisperx_segments,
+                    leading_silence_end,
+                )
                 return (
                     whisperx_segments,
                     "real-cli",
                     "real-cli:whisperx",
-                    "real-cli:whisperx-aligned",
+                    "real-cli:whisperx-aligned"
+                    + ("|leading-silence-clamped" if did_clamp_first_segment else ""),
                 )
             whisperx_failure_reason = whisperx_error or "whisperx-error"
             if whisperx_failure_reason == "whisperx-run-timeout":
@@ -4502,11 +4587,17 @@ def try_local_cli_transcription(
                     "placeholder-fallback:no-speech-detected",
                     f"placeholder-fallback:no-speech-detected|{whisperx_status}",
                 )
+            real_segments, did_clamp_first_segment = clamp_first_segment_to_detected_speech(
+                real_segments,
+                leading_silence_end,
+            )
             timing_source = (
                 f"whisperx-fallback:whisper-cli-srt|{whisperx_failure_reason}"
                 if whisperx_failure_reason
                 else "plain-whisper-cli-srt"
             )
+            if did_clamp_first_segment:
+                timing_source = f"{timing_source}|leading-silence-clamped"
             return real_segments, "real-cli", "real-cli:whisper", timing_source
 
         if not prefer_whisperx and whisperx_command_prefix:
@@ -4518,11 +4609,16 @@ def try_local_cli_transcription(
                 timeout_seconds=timeout_seconds,
             )
             if whisperx_segments:
+                whisperx_segments, did_clamp_first_segment = clamp_first_segment_to_detected_speech(
+                    whisperx_segments,
+                    leading_silence_end,
+                )
                 return (
                     whisperx_segments,
                     "real-cli",
                     "real-cli:whisperx",
-                    "real-cli:whisperx-aligned",
+                    "real-cli:whisperx-aligned"
+                    + ("|leading-silence-clamped" if did_clamp_first_segment else ""),
                 )
             whisperx_failure_reason = whisperx_error or "whisperx-error"
 
@@ -4586,7 +4682,47 @@ def update_job_processing_state(
             )
             jobs[index] = next_job
             break
-    save_state()
+        save_state()
+
+
+def repair_ready_job_leading_silence_timing(job: JobDetail) -> tuple[JobDetail, bool]:
+    if (
+        job.stage != "ready"
+        or not job.transcript_segments
+        or job.transcript_segments[0].start_seconds > 0.25
+        or "leading-silence-clamped" in job.timing_source
+    ):
+        return job, False
+
+    ffmpeg_binary = shutil.which("ffmpeg")
+    if ffmpeg_binary is None:
+        return job, False
+
+    media_path = Path(job.media_path).expanduser()
+    if not media_path.exists():
+        return job, False
+
+    leading_silence_end = detect_leading_audio_silence_end(
+        audio_path=media_path,
+        ffmpeg_binary=ffmpeg_binary,
+    )
+    adjusted_segments, did_adjust = clamp_first_segment_to_detected_speech(
+        job.transcript_segments,
+        leading_silence_end,
+    )
+    if not did_adjust:
+        return job, False
+
+    return (
+        job.model_copy(
+            update={
+                "transcript_segments": adjusted_segments,
+                "timing_source": f"{job.timing_source}|leading-silence-clamped",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ),
+        True,
+    )
 
 
 def run_ingest_pipeline(job_id: str, media_path: Path) -> None:
@@ -4918,8 +5054,12 @@ def list_jobs() -> list[JobSummary]:
 def get_job(job_id: str) -> JobDetail:
     prune_expired_data(force=True)
     recover_stale_ingest_jobs()
-    for job in jobs:
+    for index, job in enumerate(jobs):
         if job.job_id == job_id:
+            job, did_repair_leading_silence = repair_ready_job_leading_silence_timing(job)
+            if did_repair_leading_silence:
+                jobs[index] = job
+                save_state()
             if job.stage == "ready":
                 return renumber_tracks(ensure_default_edited_track(job))
             return renumber_tracks(job)

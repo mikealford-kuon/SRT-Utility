@@ -200,6 +200,36 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         self.assertNotIn("extended", retimed[0].retime_note or "")
         self.assertEqual(report.matched_segments, 2)
 
+    def test_zero_start_first_cue_clamps_to_detected_leading_speech(self) -> None:
+        segments = [
+            segment("new-1", 0.0, 13.56, "This segment starts after the video intro."),
+            segment("new-2", 13.56, 16.52, "The second timing already lines up."),
+        ]
+
+        adjusted, did_adjust = app_main.clamp_first_segment_to_detected_speech(
+            segments,
+            5.832,
+        )
+
+        self.assertTrue(did_adjust)
+        self.assertEqual(adjusted[0].start_seconds, 5.832)
+        self.assertEqual(adjusted[0].end_seconds, 13.56)
+        self.assertEqual(adjusted[1].start_seconds, 13.56)
+        self.assertIn("leading silence", adjusted[0].retime_note or "")
+
+    def test_leading_speech_clamp_leaves_existing_nonzero_start_alone(self) -> None:
+        segments = [
+            segment("new-1", 4.92, 13.56, "This segment already starts near speech."),
+        ]
+
+        adjusted, did_adjust = app_main.clamp_first_segment_to_detected_speech(
+            segments,
+            5.832,
+        )
+
+        self.assertFalse(did_adjust)
+        self.assertEqual(adjusted[0].start_seconds, 4.92)
+
     def test_dense_current_mp4_caption_gap_beats_stale_or_long_vtt_end(self) -> None:
         old_segments = [
             segment(
@@ -1327,6 +1357,44 @@ class OperationalReadinessTests(unittest.TestCase):
         self.assertEqual(job.transcript_segments[0].text, "Welcome to the EDITED course!")
         self.assertIsNone(job.pending_legacy_subtitle_path)
         self.assertIn("retimed-edits:vtt", job.transcription_source)
+
+    def test_ready_job_detail_repairs_zero_start_against_detected_leading_silence(self) -> None:
+        media_path = Path(self.temp_dir.name) / "lesson.mp4"
+        media_path.write_bytes(b"not-real-video")
+        now = datetime.now(timezone.utc).isoformat()
+        app_main.jobs[:] = [
+            JobDetail(
+                job_id="job-leading-silence",
+                kind="ingest",
+                media_path=str(media_path),
+                transcription_mode="real-cli",
+                transcription_source="real-cli:whisper",
+                timing_source="plain-whisper-cli-srt",
+                stage="ready",
+                progress_percent=100,
+                stage_label="Ready",
+                stage_description="Processing complete.",
+                created_at=now,
+                updated_at=now,
+                transcript_segments=[
+                    segment("job-leading-silence-seg-001", 0.0, 13.56, "Starts after intro."),
+                ],
+            )
+        ]
+        original_detect = app_main.detect_leading_audio_silence_end
+        original_which = app_main.shutil.which
+
+        try:
+            app_main.detect_leading_audio_silence_end = lambda **_: 5.832
+            app_main.shutil.which = lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else original_which(name)
+            detail = app_main.get_job("job-leading-silence")
+        finally:
+            app_main.detect_leading_audio_silence_end = original_detect
+            app_main.shutil.which = original_which
+
+        self.assertEqual(detail.transcript_segments[0].start_seconds, 5.832)
+        self.assertIn("leading-silence-clamped", detail.timing_source)
+        self.assertIn("leading-silence-clamped", app_main.jobs[0].timing_source)
 
     def test_manual_advance_cannot_turn_placeholder_transcript_into_ready_output(self) -> None:
         media_path = Path(self.temp_dir.name) / "lesson.mp4"
