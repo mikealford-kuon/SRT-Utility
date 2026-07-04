@@ -390,6 +390,9 @@ PACKAGE_FORMATS: tuple[str, ...] = ("scorm12", "scorm2004", "aicc", "xapi", "cmi
 DATA_RETENTION_MAX_AGE = timedelta(hours=24)
 DATA_RETENTION_SWEEP_INTERVAL = timedelta(minutes=15)
 UPLOAD_MAX_BYTES = int(os.getenv("SRT_UPLOAD_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
+STALLED_TRANSCRIPTION_FALLBACK_SECONDS = int(
+    os.getenv("INGEST_TRANSCRIPTION_STALL_SECONDS", "300")
+)
 last_retention_cleanup_at: datetime | None = None
 scorm_packages: list[ScormPackageDetail] = []
 scorm_attempts: dict[str, ScormAttemptSummary] = {}
@@ -445,6 +448,58 @@ def clear_runtime_state() -> None:
         last_retention_cleanup_at = None
         STORE_PATH.unlink(missing_ok=True)
         _write_state_unlocked()
+
+
+def recover_stale_ingest_jobs() -> None:
+    now = datetime.now(timezone.utc)
+    changed = False
+
+    with jobs_lock:
+        active_job_id = active_ingest_job_id
+        for index, job in enumerate(jobs):
+            if job.stage != "transcribing":
+                continue
+            if active_job_id == job.job_id:
+                continue
+            updated_at = parse_state_datetime(job.updated_at)
+            if updated_at is None:
+                continue
+            if now - updated_at < timedelta(
+                seconds=STALLED_TRANSCRIPTION_FALLBACK_SECONDS
+            ):
+                continue
+
+            fallback_source = (
+                f"{job.transcription_source}|fallback:transcribe-stalled:{STALLED_TRANSCRIPTION_FALLBACK_SECONDS}s"
+            )
+            jobs[index] = job.model_copy(
+                update={
+                    "stage": "ready",
+                    "progress_percent": STAGE_PROGRESS["ready"],
+                    "stage_label": STAGE_LABELS["ready"],
+                    "stage_description": STAGE_DESCRIPTIONS["ready"],
+                    "transcription_mode": (
+                        job.transcription_mode
+                        if job.transcript_is_edited and job.transcript_segments
+                        else "placeholder"
+                    ),
+                    "transcription_source": fallback_source,
+                    "timing_source": fallback_source,
+                    "transcript_segments": (
+                        job.transcript_segments
+                        if job.transcript_is_edited and job.transcript_segments
+                        else build_placeholder_segments(
+                            stage="ready",
+                            job_id=job.job_id,
+                            media_metadata=job.media_metadata,
+                        )
+                    ),
+                    "updated_at": now.isoformat(),
+                }
+            )
+            changed = True
+        if changed:
+            _write_state_unlocked()
 
 
 def parse_state_datetime(value: str | None) -> datetime | None:
@@ -4748,6 +4803,7 @@ async def ingest_upload(
 @app.get("/jobs", response_model=list[JobSummary])
 def list_jobs() -> list[JobSummary]:
     prune_expired_data(force=True)
+    recover_stale_ingest_jobs()
     # TODO: Back this with a real job store (database or durable local state).
     # TODO: Return stage-level progress for ffmpeg decode, WhisperX align, and diarization.
     return [summarize_job(job) for job in jobs]
@@ -4756,6 +4812,7 @@ def list_jobs() -> list[JobSummary]:
 @app.get("/jobs/{job_id}", response_model=JobDetail)
 def get_job(job_id: str) -> JobDetail:
     prune_expired_data(force=True)
+    recover_stale_ingest_jobs()
     for job in jobs:
         if job.job_id == job_id:
             return renumber_tracks(ensure_default_edited_track(job))
