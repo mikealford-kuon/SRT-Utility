@@ -891,7 +891,7 @@ def load_scorm_state() -> None:
 
 @app.on_event("startup")
 def on_startup() -> None:
-    if env_flag("SRT_CLEAR_RUNTIME_ON_START"):
+    if env_flag("SRT_CLEAR_RUNTIME_ON_START", "1"):
         clear_runtime_state()
     load_state()
     load_scorm_state()

@@ -766,7 +766,6 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
         if (!isActive) {
           return;
         }
-        setSelectedJobDetail(null);
         setJobDetailError(
           error instanceof Error ? error.message : "Failed to load job detail.",
         );
@@ -790,7 +789,10 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   }, [selectedJobId]);
 
   useEffect(() => {
-    if (!selectedJobDetailForSelectedJob || selectedJobDetailForSelectedJob.stage !== "ready") {
+    if (!selectedJobDetailForSelectedJob) {
+      return;
+    }
+    if (selectedJobDetailForSelectedJob.stage !== "ready") {
       setSegmentDrafts([]);
       setExpandedSegmentId(null);
       setSegmentSaveMessage("");
