@@ -448,6 +448,14 @@ async function readErrorMessage(response: Response) {
   return `Request failed (${response.status})`;
 }
 
+function isFetchNetworkError(error: unknown): boolean {
+  return error instanceof TypeError && error.message.toLowerCase().includes("fetch");
+}
+
+function apiConnectionErrorMessage(): string {
+  return `Could not reach the local API at ${API_BASE_URL}. Restart the local app, then try the upload again.`;
+}
+
 function transcriptSegmentsAreEqual(
   left: TranscriptSegment[],
   right: TranscriptSegment[],
@@ -602,6 +610,11 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
     return window.fetch(input, {
       ...init,
       headers,
+    }).catch((error: unknown) => {
+      if (isFetchNetworkError(error)) {
+        throw new Error(apiConnectionErrorMessage());
+      }
+      throw error;
     });
   };
 

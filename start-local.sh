@@ -41,6 +41,16 @@ wait_for_http() {
   return 1
 }
 
+assert_process_alive() {
+  local label="$1"
+  local pid="$2"
+  local log_path="$3"
+  if ! kill -0 "$pid" >/dev/null 2>&1; then
+    echo "$label exited during startup. Check $log_path" >&2
+    return 1
+  fi
+}
+
 cleanup() {
   local exit_code=$?
   trap - INT TERM EXIT
@@ -114,11 +124,13 @@ if ! wait_for_http "http://127.0.0.1:$BACKEND_PORT/health"; then
   echo "Backend failed to start. Check .run/backend.log" >&2
   cleanup
 fi
+assert_process_alive "Backend" "$BACKEND_PID" "$RUN_DIR/backend.log" || cleanup
 
 if ! wait_for_http "http://127.0.0.1:$FRONTEND_PORT"; then
   echo "Frontend failed to start. Check .run/frontend.log" >&2
   cleanup
 fi
+assert_process_alive "Frontend" "$FRONTEND_PID" "$RUN_DIR/frontend.log" || cleanup
 
 if [ "$DETACH" = "1" ]; then
   echo "Started in detached mode."

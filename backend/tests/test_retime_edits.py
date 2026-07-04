@@ -1263,6 +1263,71 @@ class OperationalReadinessTests(unittest.TestCase):
         self.assertEqual(job.transcript_segments, [])
         self.assertIn("pipeline-error:RuntimeError", job.transcription_source)
 
+    def test_pending_legacy_vtt_applies_to_final_ready_job_payload(self) -> None:
+        media_path = Path(self.temp_dir.name) / "lesson.mp4"
+        media_path.write_bytes(b"not-real-video")
+        pending_path = app_main.DATA_DIR / "tracks" / "old-edit.vtt"
+        pending_path.parent.mkdir(parents=True, exist_ok=True)
+        pending_path.write_text(
+            "WEBVTT\n\n"
+            "00:00:00.000 --> 00:00:01.000\n"
+            "Welcome to the EDITED course!\n",
+            encoding="utf-8",
+        )
+        self.add_queued_ingest_job("job-final-retime", media_path)
+        app_main.jobs[0] = app_main.jobs[0].model_copy(
+            update={
+                "pending_legacy_subtitle_path": str(pending_path),
+                "pending_legacy_subtitle_name": "old-edit.vtt",
+            }
+        )
+
+        original_build_media_metadata = app_main.build_media_metadata
+        original_transcribe = app_main.run_local_transcription_with_timeout
+        original_sleep = app_main.time.sleep
+
+        def fake_build_media_metadata(path: Path) -> app_main.MediaMetadata:
+            return app_main.MediaMetadata(
+                file_name=path.name,
+                size_bytes=path.stat().st_size,
+                duration_seconds=7.0,
+                has_video=True,
+                has_audio=True,
+            )
+
+        def fake_transcribe(**_: object) -> tuple[list[TranscriptSegment], str, str, str]:
+            return (
+                [
+                    segment(
+                        "job-final-retime-seg-001",
+                        5.5,
+                        7.25,
+                        "welcome to the edited course",
+                    )
+                ],
+                "real-cli",
+                "real-cli:unit-test",
+                "unit-test-timing",
+            )
+
+        try:
+            app_main.build_media_metadata = fake_build_media_metadata
+            app_main.run_local_transcription_with_timeout = fake_transcribe
+            app_main.time.sleep = lambda _: None
+            app_main.run_ingest_pipeline_unlocked("job-final-retime", media_path)
+        finally:
+            app_main.build_media_metadata = original_build_media_metadata
+            app_main.run_local_transcription_with_timeout = original_transcribe
+            app_main.time.sleep = original_sleep
+
+        job = app_main.jobs[0]
+        self.assertEqual(job.stage, "ready")
+        self.assertEqual(job.transcript_segments[0].start_seconds, 5.5)
+        self.assertEqual(job.transcript_segments[0].end_seconds, 7.25)
+        self.assertEqual(job.transcript_segments[0].text, "Welcome to the EDITED course!")
+        self.assertIsNone(job.pending_legacy_subtitle_path)
+        self.assertIn("retimed-edits:vtt", job.transcription_source)
+
     def test_manual_advance_cannot_turn_placeholder_transcript_into_ready_output(self) -> None:
         media_path = Path(self.temp_dir.name) / "lesson.mp4"
         media_path.write_bytes(b"not-real-video")

@@ -846,7 +846,11 @@ def load_state() -> None:
                     }
                 )
                 did_backfill_segments = True
-            ensured_job = renumber_tracks(ensure_default_edited_track(next_job))
+            ensured_job = (
+                renumber_tracks(ensure_default_edited_track(next_job))
+                if next_job.stage == "ready"
+                else renumber_tracks(next_job)
+            )
             if ensured_job != job:
                 jobs[index] = ensured_job
                 did_backfill_segments = True
@@ -4699,16 +4703,15 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
         )
 
         time.sleep(0.1)
-        final_segments = aligned_segments
-        apply_pending_legacy_subtitle(job_id)
         update_job_processing_state(
             job_id,
             stage="ready",
             transcription_mode=detected_mode,
             transcription_source=detected_source,
             timing_source=detected_timing_source,
-            transcript_segments=final_segments,
+            transcript_segments=aligned_segments,
         )
+        apply_pending_legacy_subtitle(job_id)
     except Exception as exc:
         logger.exception("Ingest pipeline failed for %s (%s)", job_id, media_path)
         update_job_processing_state(
@@ -4917,7 +4920,9 @@ def get_job(job_id: str) -> JobDetail:
     recover_stale_ingest_jobs()
     for job in jobs:
         if job.job_id == job_id:
-            return renumber_tracks(ensure_default_edited_track(job))
+            if job.stage == "ready":
+                return renumber_tracks(ensure_default_edited_track(job))
+            return renumber_tracks(job)
     raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
 
