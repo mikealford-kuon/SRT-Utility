@@ -396,6 +396,15 @@ UPLOAD_MAX_BYTES = int(os.getenv("SRT_UPLOAD_MAX_BYTES", str(2 * 1024 * 1024 * 1
 STALLED_TRANSCRIPTION_FALLBACK_SECONDS = int(
     os.getenv("INGEST_TRANSCRIPTION_STALL_SECONDS", "120")
 )
+TRANSCRIPTION_TIMEOUT_MIN_SECONDS = int(
+    os.getenv("INGEST_TRANSCRIPTION_MIN_SECONDS", "300")
+)
+TRANSCRIPTION_TIMEOUT_MAX_SECONDS = int(
+    os.getenv("INGEST_TRANSCRIPTION_MAX_SECONDS", "3600")
+)
+TRANSCRIPTION_TIMEOUT_DURATION_MULTIPLIER = float(
+    os.getenv("INGEST_TRANSCRIPTION_DURATION_MULTIPLIER", "2.5")
+)
 last_retention_cleanup_at: datetime | None = None
 scorm_packages: list[ScormPackageDetail] = []
 scorm_attempts: dict[str, ScormAttemptSummary] = {}
@@ -4229,17 +4238,42 @@ def find_timed_subtitle_output(
     return fallback_candidates[0] if fallback_candidates else None
 
 
+def subprocess_runtime_env() -> dict[str, str]:
+    env = os.environ.copy()
+    mpl_config_dir = DATA_DIR / "matplotlib"
+    torch_cache_dir = DATA_DIR / "torch-cache"
+    mpl_config_dir.mkdir(parents=True, exist_ok=True)
+    torch_cache_dir.mkdir(parents=True, exist_ok=True)
+    env.setdefault("MPLCONFIGDIR", str(mpl_config_dir))
+    env.setdefault("TORCH_HOME", str(torch_cache_dir))
+    return env
+
+
+def resolve_transcription_timeout_seconds(media_metadata: MediaMetadata | None) -> int:
+    duration_seconds = media_metadata.duration_seconds if media_metadata else None
+    duration_based_timeout = 0
+    if duration_seconds and duration_seconds > 0:
+        duration_based_timeout = int(duration_seconds * TRANSCRIPTION_TIMEOUT_DURATION_MULTIPLIER)
+    requested_timeout = max(
+        STALLED_TRANSCRIPTION_FALLBACK_SECONDS,
+        TRANSCRIPTION_TIMEOUT_MIN_SECONDS,
+        duration_based_timeout,
+    )
+    return min(requested_timeout, TRANSCRIPTION_TIMEOUT_MAX_SECONDS)
+
+
 def run_whisperx_transcription(
     *,
     whisperx_command_prefix: list[str],
     audio_path: Path,
     temp_dir: Path,
     job_id: str,
+    timeout_seconds: int,
 ) -> tuple[list[TranscriptSegment] | None, str | None]:
     whisperx_model = os.getenv("LOCAL_WHISPERX_MODEL", os.getenv("LOCAL_WHISPER_MODEL", "tiny"))
     whisperx_device = os.getenv("LOCAL_WHISPERX_DEVICE", "cpu")
     whisperx_compute_type = os.getenv("LOCAL_WHISPERX_COMPUTE_TYPE", "int8")
-    max_transcription_step_seconds = max(30, STALLED_TRANSCRIPTION_FALLBACK_SECONDS - 5)
+    max_transcription_step_seconds = max(30, timeout_seconds - 5)
     whisperx_timeout_raw = os.getenv("LOCAL_WHISPERX_TIMEOUT_SECONDS", str(max_transcription_step_seconds))
     try:
         whisperx_timeout_seconds = min(
@@ -4274,6 +4308,7 @@ def run_whisperx_transcription(
             capture_output=True,
             text=True,
             timeout=whisperx_timeout_seconds,
+            env=subprocess_runtime_env(),
         )
     except subprocess.TimeoutExpired:
         return None, "whisperx-run-timeout"
@@ -4311,9 +4346,9 @@ def try_local_cli_transcription(
     media_path: Path,
     job_id: str,
     media_metadata: MediaMetadata | None,
+    timeout_seconds: int,
 ) -> tuple[list[TranscriptSegment] | None, str, str, str]:
     whisperx_command_prefix, whisperx_status = find_whisperx_command()
-    whisperx_available = whisperx_command_prefix is not None
     ffmpeg_binary = shutil.which("ffmpeg")
     if ffmpeg_binary is None:
         return (
@@ -4352,7 +4387,7 @@ def try_local_cli_transcription(
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=min(120, max(30, STALLED_TRANSCRIPTION_FALLBACK_SECONDS - 5)),
+                timeout=min(180, max(30, timeout_seconds // 4)),
             )
         except (subprocess.TimeoutExpired, OSError):
             return (
@@ -4370,12 +4405,14 @@ def try_local_cli_transcription(
             )
 
         whisperx_failure_reason: str | None = None
-        if whisperx_command_prefix:
+        prefer_whisperx = os.getenv("LOCAL_TRANSCRIPTION_ENGINE", "whisper").strip().lower() == "whisperx"
+        if prefer_whisperx and whisperx_command_prefix:
             whisperx_segments, whisperx_error = run_whisperx_transcription(
                 whisperx_command_prefix=whisperx_command_prefix,
                 audio_path=audio_path,
                 temp_dir=temp_dir,
                 job_id=job_id,
+                timeout_seconds=timeout_seconds,
             )
             if whisperx_segments:
                 return (
@@ -4402,17 +4439,23 @@ def try_local_cli_transcription(
                 "--task",
                 "transcribe",
                 "--output_format",
-                "txt",
+                "srt",
                 "--output_dir",
                 str(temp_dir),
+                "--fp16",
+                "False",
             ]
+            whisper_language = os.getenv("LOCAL_WHISPER_LANGUAGE")
+            if whisper_language:
+                cli_command.extend(["--language", whisper_language])
             try:
                 cli_result = subprocess.run(
                     cli_command,
                     check=False,
                     capture_output=True,
                     text=True,
-                    timeout=max(30, STALLED_TRANSCRIPTION_FALLBACK_SECONDS - 5),
+                    timeout=max(30, timeout_seconds - 5),
+                    env=subprocess_runtime_env(),
                 )
             except (subprocess.TimeoutExpired, OSError):
                 return (
@@ -4429,8 +4472,8 @@ def try_local_cli_transcription(
                     f"placeholder-fallback:transcriber-error|{whisperx_status}",
                 )
 
-            transcript_path = temp_dir / f"{audio_path.stem}.txt"
-            if not transcript_path.exists():
+            subtitle_output = find_timed_subtitle_output(temp_dir=temp_dir, audio_path=audio_path)
+            if subtitle_output is None:
                 return (
                     None,
                     "placeholder",
@@ -4438,14 +4481,16 @@ def try_local_cli_transcription(
                     f"placeholder-fallback:transcriber-no-output|{whisperx_status}",
                 )
 
-            transcript_text = transcript_path.read_text(encoding="utf-8").strip()
-            real_segments = split_text_into_segments(
-                text=transcript_text,
-                job_id=job_id,
-                total_duration_seconds=(
-                    media_metadata.duration_seconds if media_metadata else None
-                ),
-            )
+            subtitle_path, format_name = subtitle_output
+            try:
+                subtitle_content = subtitle_path.read_text(encoding="utf-8-sig")
+                real_segments = parse_subtitle_text_to_segments(
+                    content=subtitle_content,
+                    format_name=format_name,
+                    job_id=job_id,
+                )
+            except (OSError, HTTPException, ValueError):
+                real_segments = []
             if not real_segments:
                 return (
                     None,
@@ -4454,11 +4499,28 @@ def try_local_cli_transcription(
                     f"placeholder-fallback:no-speech-detected|{whisperx_status}",
                 )
             timing_source = (
-                f"whisperx-fallback:whisper-cli-estimated|{whisperx_failure_reason}"
+                f"whisperx-fallback:whisper-cli-srt|{whisperx_failure_reason}"
                 if whisperx_failure_reason
-                else "plain-whisper-cli-estimated"
+                else "plain-whisper-cli-srt"
             )
             return real_segments, "real-cli", "real-cli:whisper", timing_source
+
+        if not prefer_whisperx and whisperx_command_prefix:
+            whisperx_segments, whisperx_error = run_whisperx_transcription(
+                whisperx_command_prefix=whisperx_command_prefix,
+                audio_path=audio_path,
+                temp_dir=temp_dir,
+                job_id=job_id,
+                timeout_seconds=timeout_seconds,
+            )
+            if whisperx_segments:
+                return (
+                    whisperx_segments,
+                    "real-cli",
+                    "real-cli:whisperx",
+                    "real-cli:whisperx-aligned",
+                )
+            whisperx_failure_reason = whisperx_error or "whisperx-error"
 
     return (
         None,
@@ -4553,6 +4615,7 @@ def run_local_transcription_with_timeout(
                 media_path=media_path,
                 job_id=job_id,
                 media_metadata=media_metadata,
+                timeout_seconds=timeout_seconds,
             )
         except BaseException as exc:  # pragma: no cover - worker hardening
             result["error"] = exc
@@ -4602,11 +4665,12 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
 
         time.sleep(0.15)
         update_job_processing_state(job_id, stage="transcribing")
+        transcription_timeout_seconds = resolve_transcription_timeout_seconds(media_metadata)
         local_segments, detected_mode, detected_source, detected_timing_source = run_local_transcription_with_timeout(
             media_path=media_path,
             job_id=job_id,
             media_metadata=media_metadata,
-            timeout_seconds=STALLED_TRANSCRIPTION_FALLBACK_SECONDS,
+            timeout_seconds=transcription_timeout_seconds,
         )
         if not local_segments:
             update_job_processing_state(

@@ -1275,6 +1275,19 @@ class OperationalReadinessTests(unittest.TestCase):
         self.assertEqual(job.stage, "failed")
         self.assertEqual(job.transcript_segments, [])
 
+    def test_transcription_timeout_scales_with_media_duration(self) -> None:
+        timeout_seconds = app_main.resolve_transcription_timeout_seconds(
+            app_main.MediaMetadata(
+                file_name="lesson.mp4",
+                size_bytes=518_539_780,
+                duration_seconds=579.264,
+                has_video=True,
+                has_audio=True,
+            )
+        )
+
+        self.assertGreaterEqual(timeout_seconds, 1448)
+
 
 if __name__ == "__main__":
     unittest.main()
