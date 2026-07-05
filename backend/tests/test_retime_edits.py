@@ -187,6 +187,91 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         self.assertNotIn("removed sentence", retimed[0].text)
         self.assertEqual(report.matched_segments, 1)
 
+    def test_matched_legacy_punctuation_is_not_overwritten_by_global_corrections(self) -> None:
+        old_segments = [
+            segment(
+                "old-1",
+                0.0,
+                4.0,
+                "These QBDs are weighted using the resources required to complete the effort.",
+            ),
+            segment(
+                "old-2",
+                4.0,
+                8.0,
+                "The percent complete EVT requires QBD's tracking records.",
+            ),
+        ]
+        new_segments = [
+            segment(
+                "new-1",
+                10.0,
+                14.0,
+                "These QBDs are weighted using the resources required to complete the effort.",
+            ),
+            segment(
+                "new-2",
+                14.0,
+                18.0,
+                "The percent complete EVT requires QBDs tracking records.",
+            ),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(retimed[0].text, old_segments[0].text)
+        self.assertEqual(retimed[1].text, old_segments[1].text)
+        self.assertEqual(report.applied_corrections, 0)
+        self.assertTrue(
+            any(
+                suggestion.wrong_text == "QBDs"
+                and suggestion.corrected_text == "QBD's"
+                for suggestion in report.learned_corrections
+            )
+        )
+
+    def test_matched_legacy_commas_are_preserved_with_mp4_timing(self) -> None:
+        old_segments = [
+            segment(
+                "old-1",
+                0.0,
+                6.0,
+                "Because of the weighting, I will take 50% when the team starts, and the remaining 50% when we finish the work package.",
+            ),
+        ]
+        new_segments = [
+            segment(
+                "new-1",
+                20.0,
+                25.0,
+                "Because of the weighting I will take 50% when the team starts and the remaining 50% when",
+            ),
+            segment("new-2", 25.0, 28.0, "we finish the work package."),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(
+            retimed[0].text,
+            "Because of the weighting, I will take 50% when the team starts, and the remaining 50% when",
+        )
+        self.assertEqual(retimed[1].text, "we finish the work package.")
+        self.assertEqual(retimed[0].start_seconds, 20.0)
+        self.assertEqual(retimed[1].end_seconds, 28.0)
+        self.assertEqual(report.matched_segments, 2)
+
     def test_single_old_vtt_cue_splits_across_current_timing_segments(self) -> None:
         old_segments = [
             segment(
@@ -1463,7 +1548,7 @@ class OperationalReadinessTests(unittest.TestCase):
         self.assertIn("leading-silence-clamped", detail.timing_source)
         self.assertIn("leading-silence-clamped", app_main.jobs[0].timing_source)
 
-    def test_ready_job_detail_repairs_dialog_turn_line_breaks(self) -> None:
+    def test_ready_job_detail_splits_dialog_turns_into_timed_cues(self) -> None:
         media_path = Path(self.temp_dir.name) / "lesson.mp4"
         media_path.write_bytes(b"not-real-video")
         now = datetime.now(timezone.utc).isoformat()
@@ -1494,12 +1579,102 @@ class OperationalReadinessTests(unittest.TestCase):
 
         detail = app_main.get_job("job-dialog-turns")
 
+        self.assertEqual(len(detail.transcript_segments), 2)
+        self.assertEqual(detail.transcript_segments[0].text, "How do you open a work package?")
+        self.assertEqual(detail.transcript_segments[1].text, "I meet with Amy.")
+        self.assertEqual(detail.transcript_segments[0].start_seconds, 10.0)
+        self.assertGreater(detail.transcript_segments[1].start_seconds, 10.0)
+        self.assertEqual(detail.transcript_segments[1].end_seconds, 16.0)
+        self.assertIn("dialog-turn-lines-normalized", detail.timing_source)
+        self.assertIn("dialog-turn-timing-split", detail.timing_source)
+        self.assertIn("dialog-turn-lines-normalized", app_main.jobs[0].timing_source)
+
+    def test_ready_job_dialog_repair_runs_even_when_old_marker_exists(self) -> None:
+        media_path = Path(self.temp_dir.name) / "lesson.mp4"
+        media_path.write_bytes(b"not-real-video")
+        now = datetime.now(timezone.utc).isoformat()
+        app_main.jobs[:] = [
+            JobDetail(
+                job_id="job-dialog-marker",
+                kind="ingest",
+                media_path=str(media_path),
+                transcription_mode="real-cli",
+                transcription_source="retimed-edits:vtt",
+                timing_source="plain-whisper-cli-srt|dialog-turn-lines-normalized",
+                stage="ready",
+                progress_percent=100,
+                stage_label="Ready",
+                stage_description="Processing complete.",
+                created_at=now,
+                updated_at=now,
+                transcript_segments=[
+                    segment(
+                        "job-dialog-marker-seg-001",
+                        20.0,
+                        26.0,
+                        "Noah, it's two things.  The interface milestones matter.",
+                    ),
+                ],
+            )
+        ]
+
+        detail = app_main.get_job("job-dialog-marker")
+
         self.assertEqual(
-            detail.transcript_segments[0].text,
-            "How do you open a work package?\nI meet with Amy.",
+            [item.text for item in detail.transcript_segments],
+            ["Noah, it's two things.", "The interface milestones matter."],
         )
         self.assertIn("dialog-turn-lines-normalized", detail.timing_source)
-        self.assertIn("dialog-turn-lines-normalized", app_main.jobs[0].timing_source)
+        self.assertIn("dialog-turn-timing-split", detail.timing_source)
+
+    def test_ready_job_dialog_repair_removes_adjacent_duplicate_boundary(self) -> None:
+        media_path = Path(self.temp_dir.name) / "lesson.mp4"
+        media_path.write_bytes(b"not-real-video")
+        now = datetime.now(timezone.utc).isoformat()
+        app_main.jobs[:] = [
+            JobDetail(
+                job_id="job-dialog-duplicate",
+                kind="ingest",
+                media_path=str(media_path),
+                transcription_mode="real-cli",
+                transcription_source="retimed-edits:vtt",
+                timing_source="plain-whisper-cli-srt|retimed-edits:vtt",
+                stage="ready",
+                progress_percent=100,
+                stage_label="Ready",
+                stage_description="Processing complete.",
+                created_at=now,
+                updated_at=now,
+                transcript_segments=[
+                    segment(
+                        "job-dialog-duplicate-seg-001",
+                        10.0,
+                        18.0,
+                        "Is that all right with you? Okay. Lucas, let's both",
+                    ),
+                    segment(
+                        "job-dialog-duplicate-seg-002",
+                        18.0,
+                        24.0,
+                        "Okay. Lucas, let's both add this to that action item.",
+                    ),
+                ],
+            )
+        ]
+
+        detail = app_main.get_job("job-dialog-duplicate")
+        combined = " ".join(segment.text for segment in detail.transcript_segments)
+
+        self.assertEqual(combined.count("Lucas, let's both"), 1)
+        self.assertIn("Is that all right with you?", combined)
+        self.assertIn("Okay.", combined)
+        okay_segment = next(
+            segment for segment in detail.transcript_segments if segment.text == "Okay."
+        )
+        self.assertGreaterEqual(
+            okay_segment.end_seconds - okay_segment.start_seconds,
+            app_main.DIALOG_TURN_MIN_DURATION_SECONDS,
+        )
 
     def test_manual_advance_cannot_turn_placeholder_transcript_into_ready_output(self) -> None:
         media_path = Path(self.temp_dir.name) / "lesson.mp4"

@@ -140,7 +140,8 @@ type HealthResponse = {
   data_dir?: string;
 };
 
-type JobStage = "queued" | "probing" | "transcribing" | "aligned" | "diarized" | "ready" | "failed";
+type JobStage = "queued" | "probing" | "transcribing" | "aligned" | "diarized" | "ready" | "failed" | "canceled";
+const TERMINAL_JOB_STAGES = new Set<JobStage>(["ready", "failed", "canceled"]);
 
 type MediaMetadata = {
   file_name: string;
@@ -226,6 +227,12 @@ type JobDetail = JobSummary & {
 type IngestResponse = {
   job_id: string;
   status: "queued";
+  message: string;
+};
+
+type CancelIngestResponse = {
+  status: "canceling" | "idle";
+  job_id?: string | null;
   message: string;
 };
 
@@ -552,6 +559,7 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isSubmittingIngest, setIsSubmittingIngest] = useState(false);
   const [isClearingRuntime, setIsClearingRuntime] = useState(false);
+  const [isCancelingIngest, setIsCancelingIngest] = useState(false);
   const [softsubOutputDir, setSoftsubOutputDir] = useState("");
   const [exportBaseName, setExportBaseName] = useState("");
   const [softsubOutputName, setSoftsubOutputName] = useState("");
@@ -747,6 +755,9 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   const editorJobIsReady =
     hasSelectedJobDetail && selectedJobDetailForSelectedJob.stage === "ready";
   const editorJobHasFailed = editorJob?.stage === "failed";
+  const selectedJobNeedsPolling = Boolean(
+    selectedJobId && (!selectedJob || !TERMINAL_JOB_STAGES.has(selectedJob.stage)),
+  );
 
   useEffect(() => {
     setSelectedJobDetail(null);
@@ -795,16 +806,20 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
     };
 
     void loadJobDetail();
-    const intervalId = window.setInterval(() => {
-      void loadJobDetail(false);
-      void loadJobs().catch(() => undefined);
-    }, 3000);
+    const intervalId = selectedJobNeedsPolling
+      ? window.setInterval(() => {
+        void loadJobDetail(false);
+        void loadJobs().catch(() => undefined);
+      }, 3000)
+      : null;
 
     return () => {
       isActive = false;
-      window.clearInterval(intervalId);
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+      }
     };
-  }, [selectedJobId]);
+  }, [selectedJobId, selectedJobNeedsPolling]);
 
   useEffect(() => {
     if (!selectedJobDetailForSelectedJob) {
@@ -864,6 +879,8 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
     ? transcriptSegments.filter((segment) => segment.retime_status === "low-confidence")
     : transcriptSegments;
   const canSubmitIngest = Boolean(selectedFile || mediaPath.trim());
+  const hasProcessingJob = jobs.some((job) => !TERMINAL_JOB_STAGES.has(job.stage));
+  const canUseRuntimeAction = !isSubmittingIngest && !isClearingRuntime && !isCancelingIngest;
   const hasUnsavedSegmentChanges = useMemo(() => {
     if (!selectedJobDetailForSelectedJob || selectedJobDetailForSelectedJob.stage !== "ready") {
       return false;
@@ -948,6 +965,11 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
     if (isSubmittingIngest || isClearingRuntime) {
       return;
     }
+    if (hasProcessingJob) {
+      setIngestMessageIsError(true);
+      setIngestMessage("Cannot clear all while an ingest job is running.");
+      return;
+    }
     setIsClearingRuntime(true);
     setIngestMessage("");
     setIngestMessageIsError(false);
@@ -980,6 +1002,43 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
       );
     } finally {
       setIsClearingRuntime(false);
+    }
+  };
+
+  const onCancelActiveIngest = async () => {
+    if (!hasProcessingJob || isSubmittingIngest || isClearingRuntime || isCancelingIngest) {
+      return;
+    }
+    setIsCancelingIngest(true);
+    setIngestMessage("");
+    setIngestMessageIsError(false);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/ingest/cancel-active`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+      const data = (await response.json()) as CancelIngestResponse;
+      if (data.job_id) {
+        setSelectedJobId(data.job_id);
+        try {
+          setSelectedJobDetail(await loadJobDetailById(data.job_id));
+        } catch {
+          setSelectedJobDetail(null);
+        }
+      }
+      await loadJobs();
+      setIngestMessageIsError(false);
+      setIngestMessage(data.message);
+    } catch (error) {
+      setIngestMessageIsError(true);
+      setIngestMessage(
+        error instanceof Error ? error.message : "Failed to cancel active ingest job.",
+      );
+    } finally {
+      setIsCancelingIngest(false);
     }
   };
 
@@ -1526,10 +1585,10 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
   );
 
   const activeProcessingJob = useMemo(() => {
-    if (selectedJob && selectedJob.stage !== "ready") {
+    if (selectedJob && !TERMINAL_JOB_STAGES.has(selectedJob.stage)) {
       return selectedJob;
     }
-    return jobs.find((job) => job.stage !== "ready") ?? null;
+    return jobs.find((job) => !TERMINAL_JOB_STAGES.has(job.stage)) ?? null;
   }, [jobs, selectedJob]);
 
   const artifactGroups = useMemo(() => {
@@ -1781,10 +1840,27 @@ function SubtitleWorkstationApp({ apiAuth }: { apiAuth: string | null }) {
               <button
                 type="button"
                 className="secondary-btn"
-                onClick={() => void onClearRuntime()}
-                disabled={isSubmittingIngest || isClearingRuntime}
+                onClick={() => {
+                  if (hasProcessingJob) {
+                    void onCancelActiveIngest();
+                    return;
+                  }
+                  void onClearRuntime();
+                }}
+                disabled={!canUseRuntimeAction}
+                title={
+                  hasProcessingJob
+                    ? "Stop the active ingest job."
+                    : "Clear local jobs, uploads, subtitle tracks, and generated files."
+                }
               >
-                {isClearingRuntime ? "Clearing..." : "Clear All"}
+                {isCancelingIngest
+                  ? "Canceling..."
+                  : hasProcessingJob
+                    ? "Cancel Job"
+                    : isClearingRuntime
+                      ? "Clearing..."
+                      : "Clear All"}
               </button>
             </div>
             <form className="ingest-form" onSubmit={onIngest}>

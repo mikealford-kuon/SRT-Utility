@@ -56,6 +56,12 @@ class ClearRuntimeResponse(BaseModel):
     message: str
 
 
+class CancelIngestResponse(BaseModel):
+    status: Literal["canceling", "idle"]
+    job_id: str | None = None
+    message: str
+
+
 class MediaMetadata(BaseModel):
     file_name: str
     size_bytes: int = Field(..., ge=0)
@@ -64,7 +70,7 @@ class MediaMetadata(BaseModel):
     has_audio: bool | None = None
 
 
-JobStage = Literal["queued", "probing", "transcribing", "aligned", "diarized", "ready", "failed"]
+JobStage = Literal["queued", "probing", "transcribing", "aligned", "diarized", "ready", "failed", "canceled"]
 
 STAGE_ORDER: tuple[JobStage, ...] = (
     "queued",
@@ -83,6 +89,7 @@ STAGE_PROGRESS: dict[JobStage, int] = {
     "diarized": 90,
     "ready": 100,
     "failed": 100,
+    "canceled": 100,
 }
 
 STAGE_LABELS: dict[JobStage, str] = {
@@ -93,6 +100,7 @@ STAGE_LABELS: dict[JobStage, str] = {
     "diarized": "Speaker tagging",
     "ready": "Ready",
     "failed": "Transcription failed",
+    "canceled": "Canceled",
 }
 
 STAGE_DESCRIPTIONS: dict[JobStage, str] = {
@@ -103,6 +111,7 @@ STAGE_DESCRIPTIONS: dict[JobStage, str] = {
     "diarized": "Applying speaker labels when available.",
     "ready": "Processing complete. Review and export are ready.",
     "failed": "Processing stopped before editable MP4 timings were produced.",
+    "canceled": "Processing was canceled before completion.",
 }
 
 
@@ -376,6 +385,9 @@ next_job_id = 1
 jobs_lock = threading.RLock()
 ingest_worker_lock = threading.Lock()
 active_ingest_job_id: str | None = None
+canceled_ingest_job_ids: set[str] = set()
+active_ingest_processes: dict[str, subprocess.Popen[str]] = {}
+active_ingest_processes_lock = threading.RLock()
 scorm_lock = threading.RLock()
 DEFAULT_DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR = Path(os.getenv("SRT_DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
@@ -409,6 +421,10 @@ last_retention_cleanup_at: datetime | None = None
 scorm_packages: list[ScormPackageDetail] = []
 scorm_attempts: dict[str, ScormAttemptSummary] = {}
 scorm_runtime_store: dict[str, dict[str, str]] = {}
+
+
+class IngestCanceled(RuntimeError):
+    pass
 
 
 def _write_state_unlocked() -> None:
@@ -457,9 +473,39 @@ def clear_runtime_state() -> None:
         jobs = []
         next_job_id = 1
         active_ingest_job_id = None
+        canceled_ingest_job_ids.clear()
+        with active_ingest_processes_lock:
+            active_ingest_processes.clear()
         last_retention_cleanup_at = None
         STORE_PATH.unlink(missing_ok=True)
         _write_state_unlocked()
+
+
+def ingest_cancel_requested(job_id: str) -> bool:
+    with jobs_lock:
+        return job_id in canceled_ingest_job_ids
+
+
+def cancel_active_ingest_job() -> str | None:
+    with jobs_lock:
+        job_id = active_ingest_job_id
+        if job_id is None:
+            return None
+        canceled_ingest_job_ids.add(job_id)
+
+    with active_ingest_processes_lock:
+        process = active_ingest_processes.get(job_id)
+    if process is not None and process.poll() is None:
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    return job_id
+
+
+def raise_if_ingest_canceled(job_id: str) -> None:
+    if ingest_cancel_requested(job_id):
+        raise IngestCanceled(f"Ingest canceled: {job_id}")
 
 
 def recover_stale_ingest_jobs() -> None:
@@ -924,6 +970,28 @@ def clear_runtime() -> ClearRuntimeResponse:
     return ClearRuntimeResponse(
         status="cleared",
         message="Cleared local jobs, uploads, subtitle tracks, and generated artifacts.",
+    )
+
+
+@app.post("/ingest/cancel-active", response_model=CancelIngestResponse)
+def cancel_active_ingest() -> CancelIngestResponse:
+    job_id = cancel_active_ingest_job()
+    if job_id is None:
+        return CancelIngestResponse(
+            status="idle",
+            message="No active ingest job is running.",
+        )
+    update_job_processing_state(
+        job_id,
+        stage="canceled",
+        transcription_source="canceled-by-user",
+        timing_source="canceled-by-user",
+        transcript_segments=[],
+    )
+    return CancelIngestResponse(
+        status="canceling",
+        job_id=job_id,
+        message="Cancel requested. Active transcription will stop shortly.",
     )
 
 
@@ -2294,6 +2362,206 @@ def normalize_legacy_dialog_turns(
     return normalized_segments
 
 
+DIALOG_TURN_MIN_DURATION_SECONDS = 0.75
+
+
+def append_retime_note(existing_note: str | None, next_note: str) -> str:
+    if not existing_note:
+        return next_note
+    if next_note in existing_note:
+        return existing_note
+    return f"{existing_note} {next_note}"
+
+
+def trim_adjacent_duplicate_dialog_boundaries(
+    segments: list[TranscriptSegment],
+) -> list[TranscriptSegment]:
+    """Remove repeated words when adjacent cues overlap at a dialog boundary."""
+    if len(segments) < 2:
+        return segments
+
+    trimmed_segments = list(segments)
+    for index in range(len(trimmed_segments) - 1):
+        current_segment = trimmed_segments[index]
+        next_segment = trimmed_segments[index + 1]
+        current_spans = subtitle_token_spans(current_segment.text)
+        next_spans = subtitle_token_spans(next_segment.text)
+        if not current_spans or not next_spans:
+            continue
+
+        current_tokens = [token for token, _, _ in current_spans]
+        next_tokens = [token for token, _, _ in next_spans]
+        max_overlap = min(len(current_tokens), len(next_tokens) - 1)
+        if max_overlap < 2:
+            continue
+
+        overlap_length = 0
+        for candidate_length in range(max_overlap, 1, -1):
+            if current_tokens[-candidate_length:] == next_tokens[:candidate_length]:
+                overlap_length = candidate_length
+                break
+        if overlap_length == 0:
+            continue
+
+        trim_start = current_spans[len(current_spans) - overlap_length][1]
+        trimmed_text = current_segment.text[:trim_start].strip(" \t\r\n-–—")
+        if not trimmed_text:
+            continue
+        trimmed_segments[index] = current_segment.model_copy(
+            update={
+                "text": normalize_dialog_turn_line_breaks(trimmed_text),
+                "retime_note": append_retime_note(
+                    current_segment.retime_note,
+                    "Repeated dialog boundary text was removed before the next cue.",
+                ),
+            }
+        )
+
+    return trimmed_segments
+
+
+def split_dialog_turn_timing_segments(
+    segments: list[TranscriptSegment],
+) -> list[TranscriptSegment]:
+    """Split obvious dialog/sentence turns into individual timed edit cues."""
+    split_segments: list[TranscriptSegment] = []
+    minimum_turn_duration = DIALOG_TURN_MIN_DURATION_SECONDS
+    for segment in segments:
+        normalized_text = normalize_dialog_turn_line_breaks(segment.text)
+        lines = [line.strip() for line in normalized_text.splitlines() if line.strip()]
+        if len(lines) < 2:
+            if normalized_text != segment.text:
+                split_segments.append(segment.model_copy(update={"text": normalized_text}))
+            else:
+                split_segments.append(segment)
+            continue
+
+        duration = segment.end_seconds - segment.start_seconds
+        if duration < minimum_turn_duration * len(lines):
+            split_segments.append(segment.model_copy(update={"text": normalized_text}))
+            continue
+
+        weights = [max(1, len(subtitle_match_tokens(line))) for line in lines]
+        total_weight = sum(weights)
+        remaining_duration = duration - (minimum_turn_duration * len(lines))
+        turn_durations = [
+            minimum_turn_duration + (remaining_duration * weight / total_weight)
+            for weight in weights
+        ]
+        cursor = segment.start_seconds
+        for line_index, line in enumerate(lines):
+            if line_index == len(lines) - 1:
+                next_end = segment.end_seconds
+            else:
+                weighted_end = cursor + turn_durations[line_index]
+                next_end = round(weighted_end, 3)
+                if next_end <= cursor:
+                    next_end = round(cursor + minimum_turn_duration, 3)
+                next_end = min(next_end, segment.end_seconds)
+            segment_id = (
+                segment.segment_id
+                if line_index == 0
+                else f"{segment.segment_id}-turn-{line_index + 1:02d}"
+            )
+            split_segments.append(
+                segment.model_copy(
+                    update={
+                        "segment_id": segment_id,
+                        "start_seconds": round(cursor, 3),
+                        "end_seconds": round(next_end, 3),
+                        "text": line,
+                        "retime_note": append_retime_note(
+                            segment.retime_note,
+                            "Dialog turn was split into a separate timed cue.",
+                        ),
+                    }
+                )
+            )
+            cursor = next_end
+
+    return split_segments
+
+
+def dialog_turn_base_segment_id(segment_id: str) -> str:
+    return segment_id.split("-turn-", maxsplit=1)[0]
+
+
+def redistribute_existing_dialog_turn_groups(
+    segments: list[TranscriptSegment],
+) -> list[TranscriptSegment]:
+    redistributed_segments: list[TranscriptSegment] = []
+    index = 0
+    while index < len(segments):
+        segment = segments[index]
+        base_segment_id = dialog_turn_base_segment_id(segment.segment_id)
+        group = [segment]
+        scan_index = index + 1
+        while scan_index < len(segments):
+            candidate = segments[scan_index]
+            if dialog_turn_base_segment_id(candidate.segment_id) != base_segment_id:
+                break
+            group.append(candidate)
+            scan_index += 1
+
+        if len(group) < 2:
+            redistributed_segments.extend(group)
+            index = scan_index
+            continue
+
+        group_start = group[0].start_seconds
+        group_end = group[-1].end_seconds
+        total_duration = group_end - group_start
+        has_short_turn = any(
+            item.end_seconds - item.start_seconds < DIALOG_TURN_MIN_DURATION_SECONDS
+            for item in group
+        )
+        if (
+            not has_short_turn
+            or total_duration < DIALOG_TURN_MIN_DURATION_SECONDS * len(group)
+        ):
+            redistributed_segments.extend(group)
+            index = scan_index
+            continue
+
+        weights = [max(1, len(subtitle_match_tokens(item.text))) for item in group]
+        total_weight = sum(weights)
+        remaining_duration = total_duration - (DIALOG_TURN_MIN_DURATION_SECONDS * len(group))
+        turn_durations = [
+            DIALOG_TURN_MIN_DURATION_SECONDS + (remaining_duration * weight / total_weight)
+            for weight in weights
+        ]
+        cursor = group_start
+        for group_index, item in enumerate(group):
+            next_end = group_end if group_index == len(group) - 1 else round(cursor + turn_durations[group_index], 3)
+            redistributed_segments.append(
+                item.model_copy(
+                    update={
+                        "start_seconds": round(cursor, 3),
+                        "end_seconds": round(next_end, 3),
+                        "retime_note": append_retime_note(
+                            item.retime_note,
+                            "Dialog turn timing was redistributed to avoid too-short cues.",
+                        ),
+                    }
+                )
+            )
+            cursor = next_end
+
+        index = scan_index
+
+    return redistributed_segments
+
+
+def prepare_ready_dialog_turn_segments(
+    segments: list[TranscriptSegment],
+) -> list[TranscriptSegment]:
+    normalized_segments = normalize_legacy_dialog_turns(segments)
+    deduped_segments = trim_adjacent_duplicate_dialog_boundaries(normalized_segments)
+    split_segments = split_dialog_turn_timing_segments(deduped_segments)
+    return redistribute_existing_dialog_turn_groups(split_segments)
+
+
+
 def detect_leading_audio_silence_end(
     *,
     audio_path: Path,
@@ -3558,6 +3826,14 @@ def retime_edited_subtitle_segments(
     )
     applied_correction_count = 0
 
+    def source_scoped_llm_corrections(segment_id: str) -> list[CorrectionSuggestion]:
+        return [
+            correction
+            for correction in learned_corrections
+            if correction.kind == "llm-candidate"
+            and correction.source_segment_id == segment_id
+        ]
+
     for old_index, new_index, confidence in alignments:
         if new_index is None:
             continue
@@ -3627,7 +3903,7 @@ def retime_edited_subtitle_segments(
             )
             projected_text, applied, suggested = apply_correction_suggestions_to_text(
                 projected_text,
-                learned_corrections,
+                source_scoped_llm_corrections(new_segment.segment_id),
             )
             correction_suggestions = [*applied, *suggested]
             applied_correction_count += len(applied)
@@ -3635,9 +3911,9 @@ def retime_edited_subtitle_segments(
             if normalize_subtitle_match_text(projected_text) != normalize_subtitle_match_text(merged_text):
                 note = f"{note} Current MP4 insert/delete structure was preserved."
             if applied:
-                note = f"{note} Learned corrections were auto-applied."
+                note = f"{note} Source-scoped LLM correction was auto-applied."
             elif suggested:
-                note = f"{note} Possible repeated VTT errors need review."
+                note = f"{note} Source-scoped LLM correction needs review."
             next_segment = new_segment.model_copy(
                 update={
                     "text": projected_text,
@@ -3701,16 +3977,16 @@ def retime_edited_subtitle_segments(
             )
             projected_text, applied, suggested = apply_correction_suggestions_to_text(
                 projected_text,
-                learned_corrections,
+                source_scoped_llm_corrections(new_segment.segment_id),
             )
             correction_suggestions = [*applied, *suggested]
             applied_correction_count += len(applied)
             if normalize_subtitle_match_text(projected_text) != normalize_subtitle_match_text(old_segment.text):
                 note = "Current MP4 insert/delete structure was preserved while applying matching VTT wording."
             if applied:
-                note = f"{note or 'Matching VTT wording was applied.'} Learned corrections were auto-applied."
+                note = f"{note or 'Matching VTT wording was applied.'} Source-scoped LLM correction was auto-applied."
             elif suggested:
-                note = f"{note or 'Matching VTT wording was applied.'} Possible repeated VTT errors need review."
+                note = f"{note or 'Matching VTT wording was applied.'} Source-scoped LLM correction needs review."
             timed_segment, timing_note = repair_dense_caption_timing_gap(
                 segment=new_segment,
                 next_timing_segment=next_timing_segment,
@@ -3747,15 +4023,15 @@ def retime_edited_subtitle_segments(
             )
             projected_text, applied, suggested = apply_correction_suggestions_to_text(
                 projected_text,
-                learned_corrections,
+                source_scoped_llm_corrections(new_segment.segment_id),
             )
             correction_suggestions = [*applied, *suggested]
             applied_correction_count += len(applied)
             note = f"{preserve_explanation} Current MP4 insert/delete structure and timing were preserved."
             if applied:
-                note = f"{note} Learned corrections were auto-applied."
+                note = f"{note} Source-scoped LLM correction was auto-applied."
             elif suggested:
-                note = f"{note} Possible repeated VTT errors need review."
+                note = f"{note} Source-scoped LLM correction needs review."
             next_segment = new_segment.model_copy(
                 update={
                     "text": projected_text,
@@ -3777,15 +4053,15 @@ def retime_edited_subtitle_segments(
             )
             projected_text, applied, suggested = apply_correction_suggestions_to_text(
                 projected_text,
-                learned_corrections,
+                source_scoped_llm_corrections(new_segment.segment_id),
             )
             correction_suggestions = [*applied, *suggested]
             applied_correction_count += len(applied)
             note = "Current MP4 text only contained part of the uploaded VTT cue; VTT-only text was removed."
             if applied:
-                note = f"{note} Learned corrections were auto-applied."
+                note = f"{note} Source-scoped LLM correction was auto-applied."
             elif suggested:
-                note = f"{note} Possible repeated VTT errors need review."
+                note = f"{note} Source-scoped LLM correction needs review."
             next_segment = new_segment.model_copy(
                 update={
                     "text": projected_text,
@@ -4393,6 +4669,65 @@ def resolve_transcription_timeout_seconds(media_metadata: MediaMetadata | None) 
     return min(requested_timeout, TRANSCRIPTION_TIMEOUT_MAX_SECONDS)
 
 
+def terminate_ingest_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def run_ingest_subprocess(
+    command: list[str],
+    *,
+    job_id: str,
+    timeout: int,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    raise_if_ingest_canceled(job_id)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    with active_ingest_processes_lock:
+        active_ingest_processes[job_id] = process
+
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            if ingest_cancel_requested(job_id):
+                terminate_ingest_process(process)
+                raise IngestCanceled(f"Ingest canceled: {job_id}")
+
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                terminate_ingest_process(process)
+                raise subprocess.TimeoutExpired(command, timeout)
+
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.25, remaining_seconds))
+                return subprocess.CompletedProcess(
+                    command,
+                    process.returncode if process.returncode is not None else 1,
+                    stdout,
+                    stderr,
+                )
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        with active_ingest_processes_lock:
+            if active_ingest_processes.get(job_id) is process:
+                active_ingest_processes.pop(job_id, None)
+
+
 def run_whisperx_transcription(
     *,
     whisperx_command_prefix: list[str],
@@ -4433,11 +4768,9 @@ def run_whisperx_transcription(
         cli_command.extend(["--language", whisper_language])
 
     try:
-        cli_result = subprocess.run(
+        cli_result = run_ingest_subprocess(
             cli_command,
-            check=False,
-            capture_output=True,
-            text=True,
+            job_id=job_id,
             timeout=whisperx_timeout_seconds,
             env=subprocess_runtime_env(),
         )
@@ -4502,7 +4835,7 @@ def try_local_cli_transcription(
         temp_dir = Path(temp_dir_str)
         audio_path = temp_dir / f"{job_id}.wav"
         try:
-            extract_result = subprocess.run(
+            extract_result = run_ingest_subprocess(
                 [
                     ffmpeg_binary,
                     "-y",
@@ -4515,9 +4848,7 @@ def try_local_cli_transcription(
                     "16000",
                     str(audio_path),
                 ],
-                check=False,
-                capture_output=True,
-                text=True,
+                job_id=job_id,
                 timeout=min(180, max(30, timeout_seconds // 4)),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -4589,11 +4920,9 @@ def try_local_cli_transcription(
             if whisper_language:
                 cli_command.extend(["--language", whisper_language])
             try:
-                cli_result = subprocess.run(
+                cli_result = run_ingest_subprocess(
                     cli_command,
-                    check=False,
-                    capture_output=True,
-                    text=True,
+                    job_id=job_id,
                     timeout=max(30, timeout_seconds - 5),
                     env=subprocess_runtime_env(),
                 )
@@ -4695,6 +5024,8 @@ def update_job_processing_state(
     transcript_segments: list[TranscriptSegment] | None = None,
 ) -> None:
     with jobs_lock:
+        if job_id in canceled_ingest_job_ids and stage != "canceled":
+            return
         for index, job in enumerate(jobs):
             if job.job_id != job_id:
                 continue
@@ -4780,19 +5111,24 @@ def repair_ready_job_dialog_turn_lines(job: JobDetail) -> tuple[JobDetail, bool]
     if (
         job.stage != "ready"
         or not job.transcript_segments
-        or "dialog-turn-lines-normalized" in job.timing_source
     ):
         return job, False
 
-    normalized_segments = normalize_legacy_dialog_turns(job.transcript_segments)
+    normalized_segments = prepare_ready_dialog_turn_segments(job.transcript_segments)
     if normalized_segments == job.transcript_segments:
         return job, False
+
+    timing_source = job.timing_source
+    if "dialog-turn-lines-normalized" not in timing_source:
+        timing_source = f"{timing_source}|dialog-turn-lines-normalized"
+    if "dialog-turn-timing-split" not in timing_source:
+        timing_source = f"{timing_source}|dialog-turn-timing-split"
 
     return (
         job.model_copy(
             update={
                 "transcript_segments": normalized_segments,
-                "timing_source": f"{job.timing_source}|dialog-turn-lines-normalized",
+                "timing_source": timing_source,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
         ),
@@ -4863,8 +5199,10 @@ def run_local_transcription_with_timeout(
 
 def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
     try:
+        raise_if_ingest_canceled(job_id)
         update_job_processing_state(job_id, stage="probing")
         media_metadata = build_media_metadata(media_path)
+        raise_if_ingest_canceled(job_id)
         with jobs_lock:
             for index, job in enumerate(jobs):
                 if job.job_id != job_id:
@@ -4879,6 +5217,7 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
         save_state()
 
         time.sleep(0.15)
+        raise_if_ingest_canceled(job_id)
         update_job_processing_state(job_id, stage="transcribing")
         transcription_timeout_seconds = resolve_transcription_timeout_seconds(media_metadata)
         local_segments, detected_mode, detected_source, detected_timing_source = run_local_transcription_with_timeout(
@@ -4887,6 +5226,7 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
             media_metadata=media_metadata,
             timeout_seconds=transcription_timeout_seconds,
         )
+        raise_if_ingest_canceled(job_id)
         if not local_segments:
             update_job_processing_state(
                 job_id,
@@ -4899,6 +5239,7 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
             return
 
         time.sleep(0.15)
+        raise_if_ingest_canceled(job_id)
         aligned_segments = local_segments
         aligned_segments = repair_dense_caption_timing_gaps(
             aligned_segments,
@@ -4914,6 +5255,7 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
         )
 
         time.sleep(0.1)
+        raise_if_ingest_canceled(job_id)
         update_job_processing_state(
             job_id,
             stage="ready",
@@ -4923,6 +5265,15 @@ def run_ingest_pipeline_unlocked(job_id: str, media_path: Path) -> None:
             transcript_segments=aligned_segments,
         )
         apply_pending_legacy_subtitle(job_id)
+    except IngestCanceled:
+        update_job_processing_state(
+            job_id,
+            stage="canceled",
+            transcription_mode="placeholder",
+            transcription_source="canceled-by-user",
+            timing_source="canceled-by-user",
+            transcript_segments=[],
+        )
     except Exception as exc:
         logger.exception("Ingest pipeline failed for %s (%s)", job_id, media_path)
         update_job_processing_state(
