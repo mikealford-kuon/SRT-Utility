@@ -2826,6 +2826,15 @@ def split_corrected_text_across_timing_segments(
         return None
     corrected_tokens = [token for token, _, _ in corrected_spans]
 
+    def extend_chunk_end_through_punctuation(token_end: int, next_token_start: int | None) -> int:
+        limit = len(corrected_text) if next_token_start is None else next_token_start
+        cursor = token_end
+        while cursor < limit:
+            if corrected_text[cursor].isalnum():
+                break
+            cursor += 1
+        return cursor
+
     def chunks_from_matches(matches: list[tuple[int, int]]) -> list[str] | None:
         chunks: list[str] = []
         for index, (match_start, match_end) in enumerate(matches):
@@ -2835,6 +2844,11 @@ def split_corrected_text_across_timing_segments(
                 char_start = 0
             if index == len(matches) - 1:
                 char_end = len(corrected_text)
+            else:
+                char_end = extend_chunk_end_through_punctuation(
+                    char_end,
+                    corrected_spans[matches[index + 1][0]][1],
+                )
             chunk = corrected_text[char_start:char_end].strip(" \t\r\n-–—")
             if not chunk:
                 return None
@@ -2860,7 +2874,14 @@ def split_corrected_text_across_timing_segments(
             if match_end < match_start:
                 return None
             char_start = 0 if index == 0 else corrected_spans[match_start][1]
-            char_end = len(corrected_text) if index == len(match_starts) - 1 else corrected_spans[match_end][2]
+            char_end = (
+                len(corrected_text)
+                if index == len(match_starts) - 1
+                else extend_chunk_end_through_punctuation(
+                    corrected_spans[match_end][2],
+                    corrected_spans[match_starts[index + 1]][1],
+                )
+            )
             chunk = corrected_text[char_start:char_end].strip(" \t\r\n-–—")
             if not chunk:
                 return None

@@ -272,6 +272,34 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         self.assertEqual(retimed[1].end_seconds, 28.0)
         self.assertEqual(report.matched_segments, 2)
 
+    def test_legacy_punctuation_at_split_boundary_is_preserved(self) -> None:
+        old_segments = [
+            segment(
+                "old-1",
+                0.0,
+                6.0,
+                "The schedule, budget, and scope remain aligned.",
+            ),
+        ]
+        new_segments = [
+            segment("new-1", 20.0, 22.0, "The schedule"),
+            segment("new-2", 22.0, 25.0, "budget and scope remain aligned"),
+        ]
+
+        retimed, report = retime_edited_subtitle_segments(
+            old_segments=old_segments,
+            new_timing_segments=new_segments,
+            source_file_name="previous.vtt",
+            source_format="vtt",
+            threshold=0.58,
+        )
+
+        self.assertEqual(retimed[0].text, "The schedule,")
+        self.assertEqual(retimed[1].text, "budget, and scope remain aligned.")
+        self.assertEqual(retimed[0].start_seconds, 20.0)
+        self.assertEqual(retimed[1].end_seconds, 25.0)
+        self.assertEqual(report.matched_segments, 2)
+
     def test_single_old_vtt_cue_splits_across_current_timing_segments(self) -> None:
         old_segments = [
             segment(
