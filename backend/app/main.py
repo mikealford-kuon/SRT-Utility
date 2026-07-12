@@ -256,7 +256,7 @@ class ExportSoftSubtitleMp4Request(BaseModel):
     download: bool = Field(default=False, description="When true, return the MP4 as a browser download response")
     track_ids: list[str] = Field(
         default_factory=list,
-        description="Stored subtitle track ids to mux into the MP4. Empty means export active tracks.",
+        description="Stored subtitle track ids to mux into the MP4. Empty excludes retime sources and snapshots.",
     )
 
     @model_validator(mode="after")
@@ -941,7 +941,7 @@ def load_scorm_state() -> None:
 
 @app.on_event("startup")
 def on_startup() -> None:
-    if env_flag("SRT_CLEAR_RUNTIME_ON_START", "1"):
+    if env_flag("SRT_CLEAR_RUNTIME_ON_START", "0"):
         clear_runtime_state()
     load_state()
     load_scorm_state()
@@ -4133,6 +4133,32 @@ def retime_edited_subtitle_segments(
             )
         )
 
+    minimum_cue_gap = 0.08
+    for index in range(1, len(retimed_segments)):
+        previous = retimed_segments[index - 1]
+        current = retimed_segments[index]
+        if previous.end_seconds + minimum_cue_gap <= current.start_seconds:
+            continue
+
+        boundary = round(
+            (previous.end_seconds + current.start_seconds) / 2.0,
+            3,
+        )
+        previous_end = round(
+            max(previous.start_seconds + 0.02, boundary - minimum_cue_gap / 2.0),
+            3,
+        )
+        current_start = round(
+            min(current.end_seconds - 0.02, boundary + minimum_cue_gap / 2.0),
+            3,
+        )
+        retimed_segments[index - 1] = previous.model_copy(
+            update={"end_seconds": previous_end}
+        )
+        retimed_segments[index] = current.model_copy(
+            update={"start_seconds": current_start}
+        )
+
     unmatched_old_count = len(old_segments) - len(matched_old_indexes)
     sore_thumb_count = sum(1 for report in segment_reports if report.status == "sore-thumb")
     low_confidence_count = sum(
@@ -4493,8 +4519,17 @@ def resolve_export_tracks(job: JobDetail, track_ids: list[str]) -> list[StoredSu
     )
 
     if not track_ids:
-        ordered = [track for track in available_tracks if track.source_kind == "edited-transcript"]
-        ordered.extend(track for track in available_tracks if track.source_kind != "edited-transcript")
+        delivery_tracks = [
+            track
+            for track in available_tracks
+            if track.source_kind not in {"pre-retime-snapshot", "retimed-edits"}
+        ]
+        ordered = [
+            track for track in delivery_tracks if track.source_kind == "edited-transcript"
+        ]
+        ordered.extend(
+            track for track in delivery_tracks if track.source_kind != "edited-transcript"
+        )
         return ordered
 
     selected: list[StoredSubtitleTrack] = []
