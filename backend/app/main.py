@@ -3589,7 +3589,7 @@ def repair_dense_caption_timing_gap(
     source_label: str,
 ) -> tuple[TranscriptSegment, str | None]:
     minimum_gap_after_dense_caption = 4.0
-    preserve_gap_before_next_caption = 1.5
+    preserve_gap_before_next_caption = 2.5
     maximum_caption_duration = 15.5
 
     if next_timing_segment is None:

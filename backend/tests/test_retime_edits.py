@@ -449,7 +449,7 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         )
 
         self.assertEqual(retimed[0].start_seconds, 52.452)
-        self.assertAlmostEqual(retimed[0].end_seconds, 67.728)
+        self.assertAlmostEqual(retimed[0].end_seconds, 66.728)
         self.assertIn("Dense caption timing was extended", retimed[0].retime_note or "")
         self.assertLess(retimed[0].end_seconds, retimed[1].start_seconds)
         self.assertEqual(report.matched_segments, 2)
@@ -493,7 +493,7 @@ class RetimeEditedSubtitleTests(unittest.TestCase):
         )
 
         self.assertEqual(retimed[0].start_seconds, 52.452)
-        self.assertAlmostEqual(retimed[0].end_seconds, 67.728)
+        self.assertAlmostEqual(retimed[0].end_seconds, 66.728)
         self.assertIn("Dense caption timing was extended", retimed[0].retime_note or "")
         self.assertLess(retimed[0].end_seconds, retimed[1].start_seconds)
         self.assertGreaterEqual(report.matched_segments, 1)
